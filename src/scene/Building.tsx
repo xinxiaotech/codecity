@@ -154,12 +154,12 @@ function getWindowStyle(type: BuildingType): "grid" | "bands" | "sparse" | "colu
 
 function getWindowColor(type: BuildingType): string {
   switch (type) {
-    case "glass": return "rgba(180,220,255,0.9)";
-    case "brick": return "rgba(255,240,180,0.8)";
-    case "artdeco": return "rgba(255,215,100,0.85)";
-    case "warehouse": return "rgba(200,200,180,0.6)";
-    case "library": return "rgba(240,235,220,0.5)";
-    case "factory": return "rgba(180,200,180,0.7)";
+    case "glass": return "rgba(60,150,230,0.9)";
+    case "brick": return "rgba(60,140,220,0.85)";
+    case "artdeco": return "rgba(70,145,225,0.85)";
+    case "warehouse": return "rgba(80,150,210,0.7)";
+    case "library": return "rgba(90,155,215,0.6)";
+    case "factory": return "rgba(70,140,210,0.8)";
   }
 }
 
@@ -281,11 +281,6 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
         <meshStandardMaterial color={roofColor} metalness={0.3} roughness={0.5} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
       </mesh>
 
-      {/* Entrance at base */}
-      <mesh position={[0, -BASE_HEIGHT / 2 + 0.04, d / 2 + 0.005]}>
-        <planeGeometry args={[w * 0.25, 0.08]} />
-        <meshStandardMaterial color="#5a4a30" transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
-      </mesh>
 
     </group>
 

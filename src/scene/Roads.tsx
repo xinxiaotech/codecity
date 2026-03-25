@@ -146,13 +146,13 @@ export function Roads({ layouts, deps, highlightedPaths }: RoadsProps) {
     const colors: number[] = [];
     const maxCount = Math.max(1, ...mergedSegments.map(s => s.count));
 
-    const dimColor = new THREE.Color("#554422");
-    const normalColor = new THREE.Color("#ffaa44");
-    const brightColor = new THREE.Color("#ffdd66");
+    const dimColor = new THREE.Color("#888888");
+    const normalColor = new THREE.Color("#404040");
+    const brightColor = new THREE.Color("#ee7700");
 
     for (const seg of mergedSegments) {
       const t = Math.min(1, seg.count / maxCount);
-      const halfW = 0.015 + t * 0.04;
+      const halfW = 0.05 + t * 0.08;
 
       // Pick color: if any highlights exist, dim non-highlighted, brighten highlighted
       let color: THREE.Color;
@@ -197,7 +197,7 @@ export function Roads({ layouts, deps, highlightedPaths }: RoadsProps) {
       <meshBasicMaterial
         vertexColors
         transparent
-        opacity={0.45}
+        opacity={0.7}
         depthWrite={false}
         side={THREE.DoubleSide}
       />

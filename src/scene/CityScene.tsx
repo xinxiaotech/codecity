@@ -1,6 +1,6 @@
 import { useMemo, useCallback, useState } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Text, Stars } from "@react-three/drei";
+import { OrbitControls, Text } from "@react-three/drei";
 import type { LayoutRect } from "../types";
 import { Building, type BuildingHoverInfo } from "./Building";
 import { Block } from "./Block";
@@ -48,18 +48,17 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
       camera={{ position: [25, 30, 25], fov: 50, near: 0.1, far: 1000 }}
       shadows
     >
-      {/* Night sky */}
-      <color attach="background" args={["#0a0a14"]} />
-      <Stars radius={200} depth={80} count={3000} factor={3} fade speed={0.5} />
+      {/* Bright blue sky */}
+      <color attach="background" args={["#4da6e8"]} />
 
-      {/* Ambient — moonlight */}
-      <ambientLight intensity={0.35} color="#8899cc" />
+      {/* Warm ambient */}
+      <ambientLight intensity={0.6} color="#ffffff" />
 
-      {/* Moon light */}
+      {/* Sun */}
       <directionalLight
-        position={[40, 60, 30]}
-        intensity={0.7}
-        color="#aabbdd"
+        position={[50, 80, 40]}
+        intensity={1.4}
+        color="#fff8e8"
         castShadow
         shadow-mapSize-width={2048}
         shadow-mapSize-height={2048}
@@ -71,16 +70,17 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
         shadow-camera-bottom={-60}
       />
 
-      {/* Fill light */}
-      <directionalLight position={[-30, 40, -30]} intensity={0.25} color="#667799" />
+      {/* Fill light from opposite side */}
+      <directionalLight position={[-30, 40, -30]} intensity={0.4} color="#aaccff" />
 
+      {/* Sky/ground color bounce */}
       <hemisphereLight
-        color="#334466"
-        groundColor="#1a1a2e"
-        intensity={0.3}
+        color="#87CEEB"
+        groundColor="#a0d060"
+        intensity={0.4}
       />
 
-      <fog attach="fog" args={["#0a0a14", 80, 250]} />
+      <fog attach="fog" args={["#4da6e8", 80, 300]} />
 
       <OrbitControls
         enableDamping
@@ -106,7 +106,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
               position={[f.x, 0.15, f.z + f.depth / 2 + 0.5]}
               rotation={[-Math.PI / 5, 0, 0]}
               fontSize={0.55}
-              color="#2a4a3a"
+              color="#3a6a4a"
               anchorX="center"
               anchorY="middle"
               outlineWidth={0.03}

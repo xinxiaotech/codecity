@@ -10,9 +10,9 @@ export function CityGround({ layouts }: CityGroundProps) {
     <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.25, 0]} receiveShadow>
       <planeGeometry args={[200, 200]} />
       <meshStandardMaterial
-        color="#3a3e44"
-        roughness={0.9}
-        metalness={0.05}
+        color="#606468"
+        roughness={0.85}
+        metalness={0.02}
         side={THREE.DoubleSide}
       />
     </mesh>
