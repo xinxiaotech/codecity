@@ -15,9 +15,10 @@ interface CitySceneProps {
   activeSurveying?: Set<string>;
   deps?: DepEdge[];
   onBuildingHover?: (info: BuildingHoverInfo | null) => void;
+  onBuildingClick?: (path: string) => void;
 }
 
-export function CityScene({ layouts, previousPaths, activeEditing, activeSurveying, deps, onBuildingHover: onBuildingHoverProp }: CitySceneProps) {
+export function CityScene({ layouts, previousPaths, activeEditing, activeSurveying, deps, onBuildingHover: onBuildingHoverProp, onBuildingClick }: CitySceneProps) {
   const folders = layouts.filter((r) => r.isFolder);
   const files = layouts.filter((r) => !r.isFolder);
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
@@ -134,6 +135,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
             isSurveying={isSurveying}
             dimmed={hasHighlighted && !isHighlighted}
             onHover={onBuildingHover}
+            onClick={onBuildingClick}
           />
         );
       })}

@@ -16,6 +16,7 @@ interface BuildingProps {
   isSurveying?: boolean;
   dimmed?: boolean;
   onHover?: (info: BuildingHoverInfo | null) => void;
+  onClick?: (path: string) => void;
 }
 
 export interface BuildingHoverInfo {
@@ -163,7 +164,7 @@ function getWindowColor(type: BuildingType): string {
   }
 }
 
-export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHover }: BuildingProps) {
+export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHover, onClick }: BuildingProps) {
   const groupRef = useRef<THREE.Group>(null);
   const effectsRef = useRef<THREE.Group>(null);
   const currentHeight = useRef(isNew ? 0.01 : layout.height);
@@ -227,6 +228,7 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
     <group
       ref={groupRef}
       position={[layout.x, layout.height / 2, layout.z]}
+      onClick={(e) => { e.stopPropagation(); onClick?.(layout.path); }}
       onPointerOver={(e) => {
         e.stopPropagation();
         setHovered(true);
@@ -235,12 +237,12 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
       }}
       onPointerOut={() => { setHovered(false); onHover?.(null); document.body.style.cursor = "auto"; }}
     >
-      {/* Hover glow */}
+      {/* Hover outline */}
       {hovered && (
-        <mesh>
-          <boxGeometry args={[w + 0.1, BASE_HEIGHT + 0.05, d + 0.1]} />
-          <meshBasicMaterial color="#ffffff" transparent opacity={0.12} />
-        </mesh>
+        <lineSegments>
+          <edgesGeometry args={[new THREE.BoxGeometry(w + 0.08, BASE_HEIGHT + 0.04, d + 0.08)]} />
+          <lineBasicMaterial color="#ffffff" linewidth={1} />
+        </lineSegments>
       )}
 
       {/* Main body - 6 faces, front/back/left/right use facade texture */}

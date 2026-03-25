@@ -112,6 +112,9 @@ function resolveImport(fromDir: string, specifier: string): string | null {
   return null;
 }
 
+// Store previous file content for diffs
+const filePrevContent = new Map<string, string>();
+
 // Dependency graph: source -> [targets]
 const fileDeps = new Map<string, string[]>();
 
@@ -168,6 +171,8 @@ watcher.on("add", (absPath) => {
   const rel = relPath(absPath);
   const lines = countLines(absPath);
   fileLines.set(rel, lines);
+  // Cache initial content
+  try { filePrevContent.set(rel, fs.readFileSync(absPath, "utf-8")); } catch { /* */ }
   updateDeps(absPath, rel);
   const event = { type: "add", path: rel, lines, timestamp: Date.now() - startTime };
   events.push(event);
@@ -178,6 +183,11 @@ watcher.on("add", (absPath) => {
 watcher.on("change", (absPath) => {
   if (!isTextFile(absPath)) return;
   const rel = relPath(absPath);
+  // Save current content as "previous" before the change is read
+  try {
+    const oldContent = fs.readFileSync(absPath, "utf-8");
+    filePrevContent.set(rel, oldContent);
+  } catch { /* ignore */ }
   const lines = countLines(absPath);
   fileLines.set(rel, lines);
   updateDeps(absPath, rel);
@@ -220,6 +230,32 @@ const server = createServer((req, res) => {
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ repoName: path.basename(resolvedDir), files }));
+    return;
+  }
+
+  if (url.pathname === "/api/file") {
+    const filePath = url.searchParams.get("path");
+    if (!filePath) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Missing path parameter" }));
+      return;
+    }
+    const absPath = path.resolve(resolvedDir, filePath);
+    // Security: ensure path is within the watched directory
+    if (!absPath.startsWith(resolvedDir)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Access denied" }));
+      return;
+    }
+    try {
+      const content = fs.readFileSync(absPath, "utf-8");
+      const previous = filePrevContent.get(filePath) ?? null;
+      res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+      res.end(JSON.stringify({ path: filePath, content, previous }));
+    } catch {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "File not found" }));
+    }
     return;
   }
 

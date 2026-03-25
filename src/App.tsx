@@ -5,6 +5,7 @@ import { StableLayoutManager } from "./layout/stable-layout";
 import { CityScene } from "./scene/CityScene";
 import { Timeline } from "./timeline/Timeline";
 import type { BuildingHoverInfo } from "./scene/Building";
+import { FileViewer } from "./components/FileViewer";
 
 export default function App() {
   const cityData = useCityData();
@@ -13,6 +14,7 @@ export default function App() {
   const layoutManagerRef = useRef<StableLayoutManager>(new StableLayoutManager());
   const [hoverInfo, setHoverInfo] = useState<BuildingHoverInfo | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+  const [viewingFile, setViewingFile] = useState<string | null>(null);
 
   const onBuildingHover = useCallback((info: BuildingHoverInfo | null) => {
     setHoverInfo(info);
@@ -59,7 +61,7 @@ export default function App() {
         </div>
       ) : (
         <>
-          <CityScene layouts={layouts} previousPaths={previousPaths} activeEditing={cityData.activeEditing} activeSurveying={cityData.activeSurveying} deps={cityData.deps} onBuildingHover={onBuildingHover} />
+          <CityScene layouts={layouts} previousPaths={previousPaths} activeEditing={cityData.activeEditing} activeSurveying={cityData.activeSurveying} deps={cityData.deps} onBuildingHover={onBuildingHover} onBuildingClick={setViewingFile} />
           <Timeline
             timeline={timeline}
             repoName={cityData.repoName}
@@ -67,6 +69,9 @@ export default function App() {
             isLive={cityData.isLive}
             connected={cityData.connected}
           />
+          {viewingFile && (
+            <FileViewer filePath={viewingFile} onClose={() => setViewingFile(null)} />
+          )}
           {hoverInfo && (
             <div style={{ ...tt.card, position: "fixed", left: mousePos.x + 16, top: mousePos.y - 10, zIndex: 1000, pointerEvents: "none" }}>
               <div style={tt.header}>
