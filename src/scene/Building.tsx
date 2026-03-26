@@ -1,5 +1,6 @@
 import React, { useRef, useState, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
+import { Text } from "@react-three/drei";
 import * as THREE from "three";
 import type { LayoutRect } from "../types";
 import { getBuildingStyle, type BuildingType } from "../utils/colors";
@@ -265,6 +266,22 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
 
 
     </group>
+
+    {/* Building name label — outside scaled group so text isn't stretched */}
+    <Text
+      position={[layout.x, h + 0.15, layout.z + d / 2 + 0.05]}
+      rotation={[-Math.PI / 6, 0, 0]}
+      fontSize={Math.min(0.3, w * 0.25)}
+      maxWidth={w * 1.5}
+      color="#ffffff"
+      anchorX="center"
+      anchorY="bottom"
+      outlineWidth={0.015}
+      outlineColor="#000000"
+      font={undefined}
+    >
+      {fileName}
+    </Text>
 
     {/* Effects — not scaled, positioned at building ground level */}
     <group ref={effectsRef} position={[layout.x, 0, layout.z]}>
