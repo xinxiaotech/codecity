@@ -291,10 +291,10 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
             anchorY="middle"
             outlineWidth={0.01}
             outlineColor="#000000"
+            outlineOpacity={dimmed ? 0.25 : 1}
+            fillOpacity={dimmed ? 0.25 : 1}
             whiteSpace="nowrap"
             font={undefined}
-            material-transparent={dimmed}
-            material-opacity={dimmed ? 0.25 : 1}
           >
             {fileName}
           </Text>
