@@ -35,9 +35,9 @@ npm run dev
 
 Open http://localhost:5173 in your browser. The city will build as the server scans files.
 
-## Claude Code Integration
+## Claude Code Integration (Required for Live Effects)
 
-To see live editing/reading effects, add this hook to your Claude Code settings (`~/.claude/settings.json`):
+To see live editing/reading effects, you **must** configure Claude Code hooks. Add this to your Claude Code settings (`~/.claude/settings.json`):
 
 ```json
 {
@@ -57,6 +57,8 @@ To see live editing/reading effects, add this hook to your Claude Code settings 
   }
 }
 ```
+
+> **Setup note:** Without this hook, CodeCity will still show file changes (via the file watcher), but you won't see the construction/survey effects that visualize Claude's activity. The hook sends tool-use events (Read, Write, Edit) to the CodeCity server in real time.
 
 This sends tool use events to the CodeCity server, which triggers:
 

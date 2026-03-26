@@ -49,9 +49,13 @@ export default function App() {
   }, [currentSnapshot]);
 
   const previousPaths = useMemo(() => {
-    const prev = new Set(previousPathsRef.current);
+    const prev = previousPathsRef.current;
     if (currentSnapshot) {
       previousPathsRef.current = new Set(currentSnapshot.files.keys());
+    }
+    // On first load, prev is empty — treat all files as existing (not "new")
+    if (prev.size === 0 && currentSnapshot && currentSnapshot.files.size > 0) {
+      return new Set(currentSnapshot.files.keys());
     }
     return prev;
   }, [currentSnapshot]);

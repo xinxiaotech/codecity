@@ -4,7 +4,6 @@ import { OrbitControls, Text } from "@react-three/drei";
 import type { LayoutRect } from "../types";
 import { Building, type BuildingHoverInfo } from "./Building";
 import { Tree, type TreeHoverInfo } from "./Tree";
-import { Block } from "./Block";
 import { CityGround } from "./CityGround";
 import { Roads } from "./Roads";
 import type { DepEdge } from "../hooks/useCityData";
@@ -22,7 +21,6 @@ interface CitySceneProps {
 }
 
 export function CityScene({ layouts, previousPaths, activeEditing, activeSurveying, deps, onBuildingHover: onBuildingHoverProp, onBuildingClick }: CitySceneProps) {
-  const folders = useMemo(() => layouts.filter((r) => r.isFolder), [layouts]);
   const buildings = useMemo(() => layouts.filter((r) => !r.isFolder && !DATA_EXTS.has(r.extension)), [layouts]);
   const trees = useMemo(() => layouts.filter((r) => !r.isFolder && DATA_EXTS.has(r.extension)), [layouts]);
   const files = useMemo(() => layouts.filter((r) => !r.isFolder), [layouts]);
@@ -109,28 +107,6 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
 
       {/* Dependency roads between files */}
       {deps && deps.length > 0 && <Roads layouts={layouts} deps={deps} highlightedPaths={highlightedPaths} />}
-
-      {/* Folder blocks with labels */}
-      {folders.map((f) => (
-        <group key={f.path}>
-          <Block layout={f} />
-          {f.folderDepth <= 1 && (
-            <Text
-              position={[f.x, 0.15, f.z + f.depth / 2 + 0.5]}
-              rotation={[-Math.PI / 5, 0, 0]}
-              fontSize={0.55}
-              color="#3a6a4a"
-              anchorX="center"
-              anchorY="middle"
-              outlineWidth={0.03}
-              outlineColor="#ffffff"
-              font={undefined}
-            >
-              {f.path.split("/").pop()}
-            </Text>
-          )}
-        </group>
-      ))}
 
       {/* Buildings (source code) */}
       {buildings.map((f) => {

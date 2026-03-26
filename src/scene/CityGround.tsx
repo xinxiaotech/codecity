@@ -7,12 +7,12 @@ interface CityGroundProps {
 
 export function CityGround({ layouts }: CityGroundProps) {
   return (
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.25, 0]} receiveShadow>
-      <planeGeometry args={[200, 200]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.05, 0]}>
+      <planeGeometry args={[300, 300]} />
       <meshStandardMaterial
-        color="#606468"
-        roughness={0.85}
-        metalness={0.02}
+        color="#5a7a50"
+        roughness={0.95}
+        metalness={0.0}
         side={THREE.DoubleSide}
       />
     </mesh>
