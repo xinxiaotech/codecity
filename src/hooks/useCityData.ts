@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { FileEvent } from "../types";
 
 export interface CitySnapshot {
@@ -22,6 +22,7 @@ export interface CityData {
 }
 
 const WS_URL = "ws://localhost:3001";
+const BATCH_INTERVAL_MS = 60;
 
 export function useCityData(): CityData {
   const [repoName, setRepoName] = useState("");
@@ -30,45 +31,71 @@ export function useCityData(): CityData {
   const [activeEditing, setActiveEditing] = useState<Set<string>>(new Set());
   const [activeSurveying, setActiveSurveying] = useState<Set<string>>(new Set());
   const [deps, setDeps] = useState<DepEdge[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
+
   const currentFilesRef = useRef<Map<string, number>>(new Map());
   const editTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const surveyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const pendingEventsRef = useRef<FileEvent[]>([]);
+  const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const addSnapshot = useCallback((files: Map<string, number>, timestamp: number) => {
-    const copy = new Map(files);
-    setSnapshots((prev) => [...prev, { files: copy, timestamp }]);
-  }, []);
-
+  // Single effect with [] deps — stable, never re-runs, no leaked connections
   useEffect(() => {
+    let alive = true; // guard against StrictMode double-mount
     let reconnectTimer: ReturnType<typeof setTimeout>;
+    let ws: WebSocket | null = null;
+
+    function flushEvents() {
+      batchTimerRef.current = null;
+      const events = pendingEventsRef.current;
+      if (events.length === 0) return;
+      pendingEventsRef.current = [];
+
+      const files = currentFilesRef.current;
+      let lastTimestamp = 0;
+      for (const event of events) {
+        if (event.type === "unlink") {
+          files.delete(event.path);
+        } else {
+          files.set(event.path, event.lines);
+        }
+        lastTimestamp = event.timestamp;
+      }
+
+      const copy = new Map(files);
+      setSnapshots((prev) => [...prev, { files: copy, timestamp: lastTimestamp }]);
+    }
+
+    function enqueueEvent(event: FileEvent) {
+      pendingEventsRef.current.push(event);
+      if (batchTimerRef.current === null) {
+        batchTimerRef.current = setTimeout(flushEvents, BATCH_INTERVAL_MS);
+      }
+    }
 
     function connect() {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+      if (!alive) return;
+      ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
         setConnected(true);
-        console.log("Connected to CodeCity server");
       };
 
       ws.onmessage = (e) => {
         const data = JSON.parse(e.data);
 
         if (data.type === "snapshot") {
-          // Initial snapshot from server
           setRepoName(data.repoName);
           const files = new Map<string, number>();
           for (const f of data.files) {
             files.set(f.path, f.lines);
           }
           currentFilesRef.current = files;
-          addSnapshot(files, 0);
+          const copy = new Map(files);
+          setSnapshots((prev) => [...prev, { files: copy, timestamp: 0 }]);
         } else if (data.type === "hook") {
           const hookPath = data.path as string;
           const action = data.action as string;
           if (hookPath && action === "read") {
-            // Mark file as being surveyed/read
             const existing = surveyTimersRef.current.get(hookPath);
             if (existing) clearTimeout(existing);
 
@@ -88,7 +115,6 @@ export function useCityData(): CityData {
             }, 5000);
             surveyTimersRef.current.set(hookPath, timer);
           } else if (hookPath) {
-            // Mark file as actively being edited
             const existing = editTimersRef.current.get(hookPath);
             if (existing) clearTimeout(existing);
 
@@ -111,37 +137,40 @@ export function useCityData(): CityData {
         } else if (data.type === "deps") {
           setDeps(data.edges as DepEdge[]);
         } else if (data.type === "event") {
-          const event = data.event as FileEvent;
-          const files = currentFilesRef.current;
-
-          if (event.type === "unlink") {
-            files.delete(event.path);
-          } else {
-            files.set(event.path, event.lines);
+          enqueueEvent(data.event as FileEvent);
+        } else if (data.type === "events") {
+          for (const event of data.events as FileEvent[]) {
+            enqueueEvent(event);
           }
-          currentFilesRef.current = files;
-          addSnapshot(files, event.timestamp);
         }
       };
 
       ws.onclose = () => {
         setConnected(false);
-        // Reconnect after 2s
-        reconnectTimer = setTimeout(connect, 2000);
+        if (alive) {
+          reconnectTimer = setTimeout(connect, 2000);
+        }
       };
 
       ws.onerror = () => {
-        ws.close();
+        ws?.close();
       };
     }
 
     connect();
 
     return () => {
+      alive = false;
       clearTimeout(reconnectTimer);
-      wsRef.current?.close();
+      if (batchTimerRef.current !== null) {
+        clearTimeout(batchTimerRef.current);
+        batchTimerRef.current = null;
+      }
+      flushEvents();
+      ws?.close();
     };
-  }, [addSnapshot]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return {
     repoName,

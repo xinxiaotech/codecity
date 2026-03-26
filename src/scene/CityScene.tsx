@@ -3,10 +3,13 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import type { LayoutRect } from "../types";
 import { Building, type BuildingHoverInfo } from "./Building";
+import { Tree, type TreeHoverInfo } from "./Tree";
 import { Block } from "./Block";
 import { CityGround } from "./CityGround";
 import { Roads } from "./Roads";
 import type { DepEdge } from "../hooks/useCityData";
+
+const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "env", "csv"]);
 
 interface CitySceneProps {
   layouts: LayoutRect[];
@@ -19,13 +22,29 @@ interface CitySceneProps {
 }
 
 export function CityScene({ layouts, previousPaths, activeEditing, activeSurveying, deps, onBuildingHover: onBuildingHoverProp, onBuildingClick }: CitySceneProps) {
-  const folders = layouts.filter((r) => r.isFolder);
-  const files = layouts.filter((r) => !r.isFolder);
+  const folders = useMemo(() => layouts.filter((r) => r.isFolder), [layouts]);
+  const buildings = useMemo(() => layouts.filter((r) => !r.isFolder && !DATA_EXTS.has(r.extension)), [layouts]);
+  const trees = useMemo(() => layouts.filter((r) => !r.isFolder && DATA_EXTS.has(r.extension)), [layouts]);
+  const files = useMemo(() => layouts.filter((r) => !r.isFolder), [layouts]);
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
 
   const onBuildingHover = useCallback((info: BuildingHoverInfo | null) => {
     setHoveredPath(info?.path ?? null);
     onBuildingHoverProp?.(info);
+  }, [onBuildingHoverProp]);
+
+  const onTreeHover = useCallback((info: TreeHoverInfo | null) => {
+    setHoveredPath(info?.path ?? null);
+    if (info) {
+      onBuildingHoverProp?.({
+        ...info,
+        styleLabel: "Data",
+        styleColor: "#4a9e4a",
+        styleType: "warehouse",
+      });
+    } else {
+      onBuildingHoverProp?.(null);
+    }
   }, [onBuildingHoverProp]);
 
   // Collect all highlighted file paths (editing, surveying, new, or hovered)
@@ -120,8 +139,8 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
         </group>
       ))}
 
-      {/* Buildings */}
-      {files.map((f) => {
+      {/* Buildings (source code) */}
+      {buildings.map((f) => {
         const isNew = previousPaths ? !previousPaths.has(f.path) : false;
         const isEditing = activeEditing?.has(f.path) ?? false;
         const isSurveying = activeSurveying?.has(f.path) ?? false;
@@ -139,6 +158,17 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
           />
         );
       })}
+
+      {/* Trees (data/config files) */}
+      {trees.map((f) => (
+        <Tree
+          key={f.path}
+          layout={f}
+          dimmed={hasHighlighted && !highlightedPaths.has(f.path)}
+          onHover={onTreeHover}
+          onClick={onBuildingClick}
+        />
+      ))}
     </Canvas>
   );
 }

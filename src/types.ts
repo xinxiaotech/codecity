@@ -40,6 +40,7 @@ export interface LayoutRect {
   width: number;
   depth: number;
   height: number;
+  lines: number;
   isFolder: boolean;
   extension: string;
   folderDepth: number;

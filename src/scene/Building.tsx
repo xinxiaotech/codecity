@@ -171,8 +171,10 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
   const [hovered, setHovered] = useState(false);
   const style = useMemo(() => getBuildingStyle(layout.path, layout.height), [layout.path, layout.height]);
 
-  const floors = Math.max(1, Math.round(layout.height / 0.8));
-  const windowCols = Math.max(2, Math.floor(Math.max(layout.width, layout.depth) / 0.4));
+  // Quantize floors and windowCols to nearest 2 so small height changes
+  // during animations don't trigger facade texture recreation
+  const floors = Math.max(2, Math.round(Math.max(1, Math.round(layout.height / 0.8)) / 2) * 2);
+  const windowCols = Math.max(2, Math.round(Math.max(2, Math.floor(Math.max(layout.width, layout.depth) / 0.4)) / 2) * 2);
 
   // Single-floor texture, tiled vertically by floor count
   const facadeTexture = useMemo(() => {
@@ -232,7 +234,7 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
       onPointerOver={(e) => {
         e.stopPropagation();
         setHovered(true);
-        onHover?.({ path: layout.path, fileName, folder, lines: Math.round(layout.height / 0.04), extension: layout.extension || "?", styleLabel: style.label, styleColor: style.color, styleType: style.type });
+        onHover?.({ path: layout.path, fileName, folder, lines: layout.lines, extension: layout.extension || "?", styleLabel: style.label, styleColor: style.color, styleType: style.type });
         document.body.style.cursor = "pointer";
       }}
       onPointerOut={() => { setHovered(false); onHover?.(null); document.body.style.cursor = "auto"; }}

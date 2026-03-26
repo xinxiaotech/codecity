@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { WebSocketServer, WebSocket } from "ws";
 import chokidar from "chokidar";
+import ignore, { type Ignore } from "ignore";
 
 const targetDir = process.argv[2];
 if (!targetDir) {
@@ -18,8 +19,11 @@ if (!fs.existsSync(resolvedDir)) {
 
 const PORT = Number(process.env.PORT) || 3001;
 
+// ---------------------------------------------------------------------------
 // State
+// ---------------------------------------------------------------------------
 const fileLines = new Map<string, number>();
+const MAX_EVENTS = 10_000;
 const events: Array<{
   type: string;
   path: string;
@@ -29,42 +33,136 @@ const events: Array<{
 const startTime = Date.now();
 const clients = new Set<WebSocket>();
 
-// Directories/files to ignore
-const IGNORED_DIRS = new Set([
-  "node_modules", ".git", "dist", "build", ".next", ".cache", ".turbo",
+// ---------------------------------------------------------------------------
+// .gitignore support — load from target directory root
+// ---------------------------------------------------------------------------
+const ALWAYS_IGNORED_DIRS = new Set([
+  "node_modules", ".git", "__pycache__", ".next", ".cache", ".turbo",
+  ".wrangler", ".vercel", ".netlify", ".serverless",
 ]);
-const IGNORED_FILES = new Set([
+const ALWAYS_IGNORED_FILES = new Set([
   "package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".DS_Store",
 ]);
 
+let ig: Ignore = ignore();
+const gitignorePath = path.join(resolvedDir, ".gitignore");
+if (fs.existsSync(gitignorePath)) {
+  const raw = fs.readFileSync(gitignorePath, "utf-8");
+  ig = ignore().add(raw);
+  console.log(`  Loaded .gitignore (${raw.split("\n").filter(l => l.trim() && !l.startsWith("#")).length} rules)`);
+}
+// Always add common junk dirs so they're skipped even without a .gitignore
+ig.add(["node_modules", ".git", "__pycache__"]);
+
 function shouldIgnore(filePath: string): boolean {
   const rel = path.relative(resolvedDir, filePath);
+  // Empty rel means this IS the watched root — don't ignore it
+  if (rel === "") return false;
+  if (rel.startsWith("..")) return true;
+  // Fast check for always-ignored dirs/files
   const parts = rel.split(path.sep);
   for (const part of parts) {
-    if (IGNORED_DIRS.has(part)) return true;
-    if (IGNORED_FILES.has(part)) return true;
+    if (ALWAYS_IGNORED_DIRS.has(part)) return true;
+    if (ALWAYS_IGNORED_FILES.has(part)) return true;
   }
+  // Check .gitignore patterns
+  const normalized = rel.replace(/\\/g, "/");
+  try {
+    if (ig.ignores(normalized)) return true;
+  } catch { /* ignore edge cases */ }
   return false;
 }
 
-// Count lines in a file
+// ---------------------------------------------------------------------------
+// File stat cache — caches stat results for 5 seconds
+// ---------------------------------------------------------------------------
+const FILE_STAT_TTL = 5_000;
+const statCache = new Map<string, { size: number; ts: number }>();
+
+function fileSize(filePath: string): number {
+  const now = Date.now();
+  const cached = statCache.get(filePath);
+  if (cached && now - cached.ts < FILE_STAT_TTL) {
+    return cached.size;
+  }
+  try {
+    const size = fs.statSync(filePath).size;
+    statCache.set(filePath, { size, ts: now });
+    return size;
+  } catch {
+    statCache.set(filePath, { size: Infinity, ts: now });
+    return Infinity;
+  }
+}
+
+// Invalidate stat cache for a specific file (called on change/unlink)
+function invalidateStatCache(filePath: string) {
+  statCache.delete(filePath);
+}
+
+// ---------------------------------------------------------------------------
+// File classification
+// ---------------------------------------------------------------------------
+const MAX_FILE_SIZE = 1_000_000; // 1 MB
+
+const BINARY_EXTS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp",
+  ".svg", ".woff", ".woff2", ".ttf", ".eot", ".otf",
+  ".mp3", ".mp4", ".wav", ".ogg", ".webm", ".flac", ".aac",
+  ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+  ".exe", ".dll", ".so", ".dylib", ".bin", ".dat",
+  ".sqlite", ".sqlite-shm", ".sqlite-wal", ".db", ".wasm",
+]);
+
+const STATIC_EXTS = new Set([
+  ".png", ".jpg", ".jpeg", ".gif", ".ico", ".bmp", ".webp", ".svg",
+  ".woff", ".woff2", ".ttf", ".eot", ".otf",
+  ".mp3", ".mp4", ".wav", ".ogg", ".webm",
+]);
+
+const SOURCE_EXTS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".py", ".rs", ".go", ".java", ".rb", ".php",
+  ".c", ".cpp", ".h", ".hpp", ".swift", ".kt",
+  ".css", ".scss", ".less", ".html", ".vue", ".svelte",
+  ".sh", ".bash", ".zsh", ".sql",
+]);
+
+function isBinaryFile(filePath: string): boolean {
+  return BINARY_EXTS.has(path.extname(filePath).toLowerCase());
+}
+
+function isSourceFile(filePath: string): boolean {
+  return SOURCE_EXTS.has(path.extname(filePath).toLowerCase());
+}
+
+// Count lines by streaming through a buffer — no giant string allocation
 function countLines(filePath: string): number {
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    return content.split("\n").length;
+    const size = fileSize(filePath);
+    if (size > MAX_FILE_SIZE || size === 0) return 0;
+    const buf = fs.readFileSync(filePath);
+    let count = 1;
+    for (let i = 0; i < buf.length; i++) {
+      if (buf[i] === 0x0a) count++;
+    }
+    return count;
   } catch {
     return 0;
   }
 }
 
-// Extract import/require references from a file, resolve to relative paths
+// Only extract imports from source files (not JSON, markdown, etc.)
 function extractImports(absPath: string): string[] {
+  if (!isSourceFile(absPath)) return [];
   try {
+    const size = fileSize(absPath);
+    if (size > MAX_FILE_SIZE) return [];
     const content = fs.readFileSync(absPath, "utf-8");
     const imports: string[] = [];
     const dir = path.dirname(absPath);
 
-    // Match: import ... from "...", import "...", require("..."), export ... from "..."
     const patterns = [
       /(?:import|export)\s+.*?from\s+['"]([^'"]+)['"]/g,
       /import\s+['"]([^'"]+)['"]/g,
@@ -75,10 +173,7 @@ function extractImports(absPath: string): string[] {
       let match;
       while ((match = pattern.exec(content)) !== null) {
         const specifier = match[1];
-        // Only resolve relative imports (./  ../)
         if (!specifier.startsWith(".")) continue;
-
-        // Try to resolve the import to an actual file
         const resolved = resolveImport(dir, specifier);
         if (resolved) {
           const rel = path.relative(resolvedDir, resolved).replace(/\\/g, "/");
@@ -112,35 +207,40 @@ function resolveImport(fromDir: string, specifier: string): string | null {
   return null;
 }
 
-// Store previous file content for diffs
-const filePrevContent = new Map<string, string>();
-
-// Dependency graph: source -> [targets]
+// ---------------------------------------------------------------------------
+// Dependency graph: source -> [targets] — with cached edge array
+// ---------------------------------------------------------------------------
 const fileDeps = new Map<string, string[]>();
+let depsDirty = true;
+let cachedDepsArray: Array<{ from: string; to: string }> | null = null;
 
 function updateDeps(absPath: string, rel: string) {
   const imports = extractImports(absPath);
   fileDeps.set(rel, imports);
+  depsDirty = true;
+}
+
+function removeDeps(rel: string) {
+  fileDeps.delete(rel);
+  depsDirty = true;
 }
 
 function getDepsArray(): Array<{ from: string; to: string }> {
+  if (!depsDirty && cachedDepsArray) return cachedDepsArray;
   const edges: Array<{ from: string; to: string }> = [];
   for (const [from, targets] of fileDeps) {
     for (const to of targets) {
       edges.push({ from, to });
     }
   }
+  cachedDepsArray = edges;
+  depsDirty = false;
   return edges;
 }
 
-// Check if file is likely a text file (skip binaries)
-function isTextFile(filePath: string): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  const binaryExts = new Set([
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2",
-    ".ttf", ".eot", ".mp3", ".mp4", ".zip", ".tar", ".gz", ".pdf",
-  ]);
-  return !binaryExts.has(ext);
+// Check if file should be tracked (text files only, skip binaries)
+function isTrackableFile(filePath: string): boolean {
+  return !isBinaryFile(filePath);
 }
 
 // Get relative path
@@ -148,7 +248,37 @@ function relPath(absPath: string): string {
   return path.relative(resolvedDir, absPath).replace(/\\/g, "/");
 }
 
-// Broadcast to all connected clients
+// ---------------------------------------------------------------------------
+// Batched event broadcasting
+// ---------------------------------------------------------------------------
+let eventQueue: Array<unknown> = [];
+let batchTimer: ReturnType<typeof setTimeout> | null = null;
+
+function getBatchInterval(): number {
+  return ready ? 50 : 200;
+}
+
+function flushEventQueue() {
+  batchTimer = null;
+  if (eventQueue.length === 0) return;
+  const batch = eventQueue;
+  eventQueue = [];
+  const msg = JSON.stringify({ type: "events", events: batch });
+  for (const ws of clients) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
+    }
+  }
+}
+
+function queueBroadcast(data: unknown) {
+  eventQueue.push(data);
+  if (!batchTimer) {
+    batchTimer = setTimeout(flushEventQueue, getBatchInterval());
+  }
+}
+
+// Broadcast immediately (for non-event messages like snapshot, deps, hook)
 function broadcast(data: unknown) {
   const msg = JSON.stringify(data);
   for (const ws of clients) {
@@ -158,7 +288,33 @@ function broadcast(data: unknown) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Cap events array at MAX_EVENTS
+// ---------------------------------------------------------------------------
+function pushEvent(event: { type: string; path: string; lines: number; timestamp: number }) {
+  events.push(event);
+  if (events.length > MAX_EVENTS) {
+    // Drop oldest entries to get back to the limit
+    const overflow = events.length - MAX_EVENTS;
+    events.splice(0, overflow);
+  }
+}
+
+// Debounced deps broadcast — avoid flooding during initial scan
+let depsTimer: ReturnType<typeof setTimeout> | null = null;
+function broadcastDepsDebounced() {
+  if (depsTimer) clearTimeout(depsTimer);
+  depsTimer = setTimeout(() => {
+    broadcast({ type: "deps", edges: getDepsArray() });
+    depsTimer = null;
+  }, ready ? 100 : 500);
+}
+
+let ready = false;
+
+// ---------------------------------------------------------------------------
 // File watcher
+// ---------------------------------------------------------------------------
 const watcher = chokidar.watch(resolvedDir, {
   ignored: (filePath: string) => shouldIgnore(filePath),
   persistent: true,
@@ -167,47 +323,53 @@ const watcher = chokidar.watch(resolvedDir, {
 });
 
 watcher.on("add", (absPath) => {
-  if (!isTextFile(absPath)) return;
+  if (!isTrackableFile(absPath) || fileSize(absPath) > MAX_FILE_SIZE) return;
   const rel = relPath(absPath);
   const lines = countLines(absPath);
   fileLines.set(rel, lines);
-  // Cache initial content
-  try { filePrevContent.set(rel, fs.readFileSync(absPath, "utf-8")); } catch { /* */ }
   updateDeps(absPath, rel);
   const event = { type: "add", path: rel, lines, timestamp: Date.now() - startTime };
-  events.push(event);
-  broadcast({ type: "event", event });
-  broadcast({ type: "deps", edges: getDepsArray() });
+  pushEvent(event);
+  queueBroadcast(event);
+  broadcastDepsDebounced();
 });
 
 watcher.on("change", (absPath) => {
-  if (!isTextFile(absPath)) return;
+  // Invalidate stat cache on change so we get fresh size
+  invalidateStatCache(absPath);
+  if (!isTrackableFile(absPath) || fileSize(absPath) > MAX_FILE_SIZE) return;
   const rel = relPath(absPath);
-  // Save current content as "previous" before the change is read
-  try {
-    const oldContent = fs.readFileSync(absPath, "utf-8");
-    filePrevContent.set(rel, oldContent);
-  } catch { /* ignore */ }
   const lines = countLines(absPath);
   fileLines.set(rel, lines);
   updateDeps(absPath, rel);
   const event = { type: "change", path: rel, lines, timestamp: Date.now() - startTime };
-  events.push(event);
-  broadcast({ type: "event", event });
-  broadcast({ type: "deps", edges: getDepsArray() });
+  pushEvent(event);
+  queueBroadcast(event);
+  broadcastDepsDebounced();
 });
 
 watcher.on("unlink", (absPath) => {
+  invalidateStatCache(absPath);
   const rel = relPath(absPath);
   fileLines.delete(rel);
-  fileDeps.delete(rel);
+  removeDeps(rel);
   const event = { type: "unlink", path: rel, lines: 0, timestamp: Date.now() - startTime };
-  events.push(event);
-  broadcast({ type: "event", event });
-  broadcast({ type: "deps", edges: getDepsArray() });
+  pushEvent(event);
+  queueBroadcast(event);
+  broadcastDepsDebounced();
 });
 
+watcher.on("ready", () => {
+  ready = true;
+  // Log after a brief delay so awaitWriteFinish files settle
+  setTimeout(() => {
+    console.log(`  Indexed ${fileLines.size} files`);
+  }, 1000);
+});
+
+// ---------------------------------------------------------------------------
 // HTTP server for REST endpoints
+// ---------------------------------------------------------------------------
 const server = createServer((req, res) => {
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -249,9 +411,8 @@ const server = createServer((req, res) => {
     }
     try {
       const content = fs.readFileSync(absPath, "utf-8");
-      const previous = filePrevContent.get(filePath) ?? null;
       res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-      res.end(JSON.stringify({ path: filePath, content, previous }));
+      res.end(JSON.stringify({ path: filePath, content, previous: null }));
     } catch {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "File not found" }));
@@ -318,7 +479,9 @@ const server = createServer((req, res) => {
   res.end(JSON.stringify({ error: "Not found" }));
 });
 
+// ---------------------------------------------------------------------------
 // WebSocket server
+// ---------------------------------------------------------------------------
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {

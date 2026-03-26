@@ -1,238 +1,466 @@
 import type { LayoutRect } from "../types";
 
-const HEIGHT_SCALE = 0.04;
 const MIN_HEIGHT = 0.3;
-const BUILDING_GAP = 0.7;
-const BLOCK_PADDING = 0.6;
-const BLOCK_GAP = 1.2; // road width between blocks
+const MAX_HEIGHT = 12; // cap so no building dominates the scene
 
-interface PlacedBuilding {
+const DOC_EXTS = new Set(["md", "mdx", "txt", "rst"]);
+const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "env", "csv"]);
+
+/** Log-scaled height: linear up to ~100 lines, then logarithmic */
+function fileHeight(lines: number, ext?: string): number {
+  if (lines <= 0) return MIN_HEIGHT;
+
+  // Docs (md/txt) — low, wide library buildings (cap at 3)
+  if (ext && DOC_EXTS.has(ext)) {
+    const h = 0.8 + Math.log2(Math.max(1, lines)) * 0.35;
+    return Math.min(3, h);
+  }
+
+  // Data files (json/yaml) — height doesn't matter (rendered as trees),
+  // but keep a small value for layout purposes
+  if (ext && DATA_EXTS.has(ext)) {
+    return Math.min(2, 0.5 + Math.log2(Math.max(1, lines)) * 0.15);
+  }
+
+  // Source code — normal log scaling
+  const LINEAR_CAP = 100;
+  const LINEAR_SCALE = 0.04;
+  if (lines <= LINEAR_CAP) {
+    return Math.max(MIN_HEIGHT, lines * LINEAR_SCALE);
+  }
+  const linearPart = LINEAR_CAP * LINEAR_SCALE;
+  const logPart = Math.log2(lines / LINEAR_CAP) * 1.8;
+  return Math.min(MAX_HEIGHT, linearPart + logPart);
+}
+
+const CLEARANCE = 0.6; // minimum gap enforced between any two buildings
+const FOLDER_PAD = 0.4; // extra padding around folder ground planes
+const GRID_CELL = 2.0; // coarse spatial grid cell size
+const MAX_EVENTS = 10_000; // cap on the events history array
+
+interface Plot {
+  path: string;
+  x: number; // center X in world
+  z: number; // center Z in world
+  lotW: number; // half-width of reserved land (building + clearance)
+  lotD: number; // half-depth of reserved land
+  buildingW: number;
+  buildingD: number;
+}
+
+interface LayoutEvent {
+  type: "acquire" | "release";
   path: string;
   x: number;
   z: number;
-  width: number;
-  depth: number;
+  timestamp: number;
 }
 
-interface FolderBlock {
-  folderPath: string;
-  x: number;
-  z: number;
-  width: number;
-  depth: number;
-  buildings: PlacedBuilding[];
-  nextX: number; // cursor for placing next building in this block
-  nextZ: number;
-  rowHeight: number; // tallest depth in current row
+/** Convert world coordinate to grid key component */
+function toCell(v: number): number {
+  return Math.floor(v / GRID_CELL);
+}
+
+/** Produce a string key for a grid cell */
+function cellKey(cx: number, cz: number): string {
+  return `${cx},${cz}`;
 }
 
 /**
- * Stable layout manager - buildings keep their positions.
- * New files get placed in available space. Edits only change height.
- * Deleted files free their spot for future use.
+ * Land-acquisition layout: every building individually acquires a plot of
+ * land nearby its folder-mates.  The plot is exclusively reserved until
+ * the file is deleted, at which point the land is released and can be
+ * reused by future files.
  */
 export class StableLayoutManager {
-  private placements = new Map<string, PlacedBuilding>();
-  private folderBlocks = new Map<string, FolderBlock>();
-  private freedSpots: PlacedBuilding[] = [];
-  private nextBlockX = 0;
-  private nextBlockZ = 0;
-  private blockRowMaxDepth = 0;
-  private blocksInRow = 0;
-  private readonly maxBlocksPerRow = 4;
+  private plots = new Map<string, Plot>();
 
-  /**
-   * Update layout with current file state.
-   * Returns stable LayoutRect[] - positions don't change for existing files.
-   */
+  // --- Spatial grid index (optimization 1) ---
+  // Maps cell key -> set of plot paths occupying that cell
+  private grid = new Map<string, Set<string>>();
+  // Maps plot path -> list of cell keys it occupies
+  private plotCells = new Map<string, string[]>();
+
+  // --- Folder index (optimization 2) ---
+  // Maps folder path -> array of plots in that folder
+  private folderIndex = new Map<string, Plot[]>();
+
+  // --- Incremental frontier tracking (optimization 3) ---
+  private cityMaxZ = -Infinity;
+
+  // --- Capped events array (optimization 4) ---
+  private events: LayoutEvent[] = [];
+
   computeLayout(files: Map<string, number>): LayoutRect[] {
+    // Release land for deleted files
+    for (const path of this.plots.keys()) {
+      if (!files.has(path)) this.releasePlot(path);
+    }
+
+    // Acquire land for new files
+    for (const [filePath, lines] of files) {
+      if (!this.plots.has(filePath)) {
+        this.acquirePlot(filePath, lines);
+      }
+    }
+
+    // Build layout results
     const results: LayoutRect[] = [];
 
-    // Find removed files and free their spots
-    for (const [path, placement] of this.placements) {
-      if (!files.has(path)) {
-        this.freedSpots.push(placement);
-        this.placements.delete(path);
-      }
-    }
-
-    // Process all current files
     for (const [filePath, lines] of files) {
-      const existing = this.placements.get(filePath);
-      if (existing) {
-        // File still exists - keep position, just update height
-        const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-        const folderPath = this.getFolderPath(filePath);
-        const block = this.folderBlocks.get(folderPath);
-        results.push({
-          path: filePath,
-          x: existing.x,
-          z: existing.z,
-          width: existing.width,
-          depth: existing.depth,
-          height: Math.max(MIN_HEIGHT, lines * HEIGHT_SCALE),
-          isFolder: false,
-          extension: ext,
-          folderDepth: folderPath.split("/").filter(Boolean).length,
-        });
-      } else {
-        // New file - find a spot
-        const placement = this.placeNewFile(filePath, lines);
-        this.placements.set(filePath, placement);
-        const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-        const folderPath = this.getFolderPath(filePath);
-        results.push({
-          path: filePath,
-          x: placement.x,
-          z: placement.z,
-          width: placement.width,
-          depth: placement.depth,
-          height: Math.max(MIN_HEIGHT, lines * HEIGHT_SCALE),
-          isFolder: false,
-          extension: ext,
-          folderDepth: folderPath.split("/").filter(Boolean).length,
-        });
-      }
+      const plot = this.plots.get(filePath)!;
+      const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+      const folder = getFolderPath(filePath);
+      results.push({
+        path: filePath,
+        x: plot.x,
+        z: plot.z,
+        width: plot.buildingW,
+        depth: plot.buildingD,
+        height: fileHeight(lines, ext),
+        lines,
+        isFolder: false,
+        extension: ext,
+        folderDepth: folder.split("/").filter(Boolean).length,
+      });
     }
 
-    // Add folder block ground planes
-    for (const [folderPath, block] of this.folderBlocks) {
-      // Recompute block bounds based on actual buildings inside it
-      const blockBuildings = Array.from(this.placements.values()).filter(
-        (p) => this.getFolderPath(p.path) === folderPath
-      );
-      if (blockBuildings.length === 0) continue;
-
-      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
-      for (const b of blockBuildings) {
-        minX = Math.min(minX, b.x - b.width / 2);
-        maxX = Math.max(maxX, b.x + b.width / 2);
-        minZ = Math.min(minZ, b.z - b.depth / 2);
-        maxZ = Math.max(maxZ, b.z + b.depth / 2);
+    // Folder ground planes — use the folder index directly
+    for (const [folder, plots] of this.folderIndex) {
+      if (plots.length === 0) continue;
+      let minX = Infinity, maxX = -Infinity;
+      let minZ = Infinity, maxZ = -Infinity;
+      for (const p of plots) {
+        minX = Math.min(minX, p.x - p.buildingW / 2);
+        maxX = Math.max(maxX, p.x + p.buildingW / 2);
+        minZ = Math.min(minZ, p.z - p.buildingD / 2);
+        maxZ = Math.max(maxZ, p.z + p.buildingD / 2);
       }
-
-      const pad = 0.3;
-      const depth = folderPath.split("/").filter(Boolean).length;
       results.push({
-        path: folderPath,
+        path: folder,
         x: (minX + maxX) / 2,
         z: (minZ + maxZ) / 2,
-        width: maxX - minX + pad * 2,
-        depth: maxZ - minZ + pad * 2,
+        width: maxX - minX + FOLDER_PAD * 2,
+        depth: maxZ - minZ + FOLDER_PAD * 2,
         height: 0,
+        lines: 0,
         isFolder: true,
         extension: "",
-        folderDepth: depth,
+        folderDepth: folder.split("/").filter(Boolean).length,
       });
     }
 
     return results;
   }
 
-  private getFolderPath(filePath: string): string {
-    const parts = filePath.split("/");
-    if (parts.length <= 1) return "__root__";
-    return parts.slice(0, -1).join("/");
+  // ---------------------------------------------------------------------------
+  // Land acquisition & release
+  // ---------------------------------------------------------------------------
+
+  private acquirePlot(filePath: string, lines: number) {
+    const size = getBuildingSize(filePath, lines);
+    const lotW = (size.width + CLEARANCE) / 2;
+    const lotD = (size.depth + CLEARANCE) / 2;
+
+    // Pick a target location: near folder-mates, or at the city frontier
+    const target = this.findTarget(filePath, lotW, lotD);
+
+    // Search outward from target for the nearest free spot
+    const pos = this.findFreeSpot(target.x, target.z, lotW, lotD);
+
+    const plot: Plot = {
+      path: filePath,
+      x: pos.x,
+      z: pos.z,
+      lotW,
+      lotD,
+      buildingW: size.width,
+      buildingD: size.depth,
+    };
+
+    this.plots.set(filePath, plot);
+
+    // Update spatial grid
+    this.addToGrid(plot);
+
+    // Update folder index
+    const folder = getFolderPath(filePath);
+    let list = this.folderIndex.get(folder);
+    if (!list) {
+      list = [];
+      this.folderIndex.set(folder, list);
+    }
+    list.push(plot);
+
+    // Update incremental frontier
+    const plotMaxZ = pos.z + lotD;
+    if (plotMaxZ > this.cityMaxZ) {
+      this.cityMaxZ = plotMaxZ;
+    }
+
+    // Record event (capped)
+    this.pushEvent({ type: "acquire", path: filePath, x: pos.x, z: pos.z, timestamp: Date.now() });
   }
 
-  private getBuildingSize(lines: number): { width: number; depth: number } {
-    // Building footprint scales with sqrt of lines for variety
-    const base = 0.8 + Math.sqrt(Math.max(1, lines)) * 0.08;
-    const width = Math.min(3, Math.max(0.6, base));
-    const depth = Math.min(2.5, Math.max(0.5, base * 0.8));
-    return { width, depth };
+  private releasePlot(path: string) {
+    const plot = this.plots.get(path);
+    if (!plot) return;
+
+    // Remove from spatial grid
+    this.removeFromGrid(path);
+
+    // Remove from folder index
+    const folder = getFolderPath(path);
+    const list = this.folderIndex.get(folder);
+    if (list) {
+      const idx = list.indexOf(plot);
+      if (idx !== -1) list.splice(idx, 1);
+      if (list.length === 0) this.folderIndex.delete(folder);
+    }
+
+    this.plots.delete(path);
+
+    // Recompute cityMaxZ if the removed plot was at the frontier
+    const removedMaxZ = plot.z + plot.lotD;
+    if (removedMaxZ >= this.cityMaxZ) {
+      this.recomputeCityMaxZ();
+    }
+
+    // Record event (capped)
+    this.pushEvent({ type: "release", path, x: plot.x, z: plot.z, timestamp: Date.now() });
   }
 
-  private placeNewFile(filePath: string, lines: number): PlacedBuilding {
-    const size = this.getBuildingSize(lines);
-    const folderPath = this.getFolderPath(filePath);
+  // ---------------------------------------------------------------------------
+  // Spatial grid helpers
+  // ---------------------------------------------------------------------------
 
-    // Try to reuse a freed spot first (in same folder preferably)
-    const freedIdx = this.freedSpots.findIndex(
-      (s) => this.getFolderPath(s.path) === folderPath &&
-        s.width >= size.width * 0.7 && s.depth >= size.depth * 0.7
-    );
-    if (freedIdx >= 0) {
-      const spot = this.freedSpots.splice(freedIdx, 1)[0];
+  /** Compute which grid cells a plot occupies and register them */
+  private addToGrid(plot: Plot) {
+    const cells = this.getCellsForPlot(plot);
+    this.plotCells.set(plot.path, cells);
+    for (const key of cells) {
+      let set = this.grid.get(key);
+      if (!set) {
+        set = new Set();
+        this.grid.set(key, set);
+      }
+      set.add(plot.path);
+    }
+  }
+
+  /** Remove a plot from the grid */
+  private removeFromGrid(path: string) {
+    const cells = this.plotCells.get(path);
+    if (!cells) return;
+    for (const key of cells) {
+      const set = this.grid.get(key);
+      if (set) {
+        set.delete(path);
+        if (set.size === 0) this.grid.delete(key);
+      }
+    }
+    this.plotCells.delete(path);
+  }
+
+  /** Return all grid cell keys that a plot's AABB covers */
+  private getCellsForPlot(plot: Plot): string[] {
+    const minCX = toCell(plot.x - plot.lotW);
+    const maxCX = toCell(plot.x + plot.lotW);
+    const minCZ = toCell(plot.z - plot.lotD);
+    const maxCZ = toCell(plot.z + plot.lotD);
+    const keys: string[] = [];
+    for (let cx = minCX; cx <= maxCX; cx++) {
+      for (let cz = minCZ; cz <= maxCZ; cz++) {
+        keys.push(cellKey(cx, cz));
+      }
+    }
+    return keys;
+  }
+
+  /** Return all grid cell keys that a candidate AABB covers */
+  private getCellsForAABB(cx: number, cz: number, lotW: number, lotD: number): string[] {
+    const minCX = toCell(cx - lotW);
+    const maxCX = toCell(cx + lotW);
+    const minCZ = toCell(cz - lotD);
+    const maxCZ = toCell(cz + lotD);
+    const keys: string[] = [];
+    for (let gx = minCX; gx <= maxCX; gx++) {
+      for (let gz = minCZ; gz <= maxCZ; gz++) {
+        keys.push(cellKey(gx, gz));
+      }
+    }
+    return keys;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Target finding & overlap detection
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Find a good target position for a new file:
+   *  - If the folder already has buildings, aim for the spot just to the
+   *    right of the rightmost one (extends the neighborhood naturally).
+   *  - Otherwise, aim for the frontier of the city.
+   */
+  private findTarget(
+    filePath: string,
+    lotW: number,
+    lotD: number,
+  ): { x: number; z: number } {
+    const folder = getFolderPath(filePath);
+
+    // Use folder index instead of scanning all plots
+    const mates = this.folderIndex.get(folder);
+    if (mates && mates.length > 0) {
+      // Find the rightmost building in the same folder
+      let rightmost = mates[0];
+      for (let i = 1; i < mates.length; i++) {
+        const m = mates[i];
+        if (m.x + m.lotW > rightmost.x + rightmost.lotW) {
+          rightmost = m;
+        }
+      }
       return {
-        path: filePath,
-        x: spot.x,
-        z: spot.z,
-        width: size.width,
-        depth: size.depth,
+        x: rightmost.x + rightmost.lotW + lotW,
+        z: rightmost.z,
       };
     }
 
-    // Get or create folder block
-    let block = this.folderBlocks.get(folderPath);
-    if (!block) {
-      block = this.createBlock(folderPath);
-      this.folderBlocks.set(folderPath, block);
+    // New folder — place at the city frontier
+    return this.getCityFrontier(lotW, lotD);
+  }
+
+  /**
+   * Find a spot at the edge of the current city so new folders
+   * don't land on top of existing ones.
+   * Uses incrementally tracked cityMaxZ instead of scanning all plots.
+   */
+  private getCityFrontier(lotW: number, lotD: number): { x: number; z: number } {
+    if (this.plots.size === 0) return { x: 0, z: 0 };
+    return { x: lotW, z: this.cityMaxZ + lotD + CLEARANCE * 2 };
+  }
+
+  /** Recompute cityMaxZ from scratch (only called when a frontier plot is removed) */
+  private recomputeCityMaxZ() {
+    let maxZ = -Infinity;
+    for (const p of this.plots.values()) {
+      const pz = p.z + p.lotD;
+      if (pz > maxZ) maxZ = pz;
+    }
+    this.cityMaxZ = maxZ;
+  }
+
+  /**
+   * Starting from (nearX, nearZ), search outward in an expanding grid
+   * for the nearest position where the lot doesn't overlap any existing plot.
+   */
+  private findFreeSpot(
+    nearX: number,
+    nearZ: number,
+    lotW: number,
+    lotD: number,
+  ): { x: number; z: number } {
+    // Try the exact target first
+    if (!this.overlapsAny(nearX, nearZ, lotW, lotD)) {
+      return { x: nearX, z: nearZ };
     }
 
-    // Place within the block using row-based packing
-    const bw = size.width + BUILDING_GAP;
-    const bd = size.depth + BUILDING_GAP;
+    // Expand in rings — step size matches the lot so the grid packs tightly
+    const stepX = lotW * 2;
+    const stepZ = lotD * 2;
 
-    // Check if fits in current row
-    if (block.nextX + bw > block.width - BLOCK_PADDING) {
-      // Start new row
-      block.nextX = BLOCK_PADDING;
-      block.nextZ += block.rowHeight + BUILDING_GAP;
-      block.rowHeight = bd;
-
-      // Expand block if needed
-      if (block.nextZ + bd > block.depth - BLOCK_PADDING) {
-        block.depth = block.nextZ + bd + BLOCK_PADDING;
+    for (let ring = 1; ring <= 50; ring++) {
+      // Walk the perimeter of the ring
+      for (let i = -ring; i <= ring; i++) {
+        for (let j = -ring; j <= ring; j++) {
+          if (Math.abs(i) !== ring && Math.abs(j) !== ring) continue;
+          const x = nearX + i * stepX;
+          const z = nearZ + j * stepZ;
+          if (!this.overlapsAny(x, z, lotW, lotD)) {
+            return { x, z };
+          }
+        }
       }
     }
 
-    block.rowHeight = Math.max(block.rowHeight, bd);
-
-    const placement: PlacedBuilding = {
-      path: filePath,
-      x: block.x - block.width / 2 + block.nextX + size.width / 2,
-      z: block.z - block.depth / 2 + block.nextZ + size.depth / 2,
-      width: size.width,
-      depth: size.depth,
-    };
-
-    block.nextX += bw;
-    block.buildings.push(placement);
-
-    return placement;
+    // Fallback (should never happen with 50 rings)
+    return { x: nearX, z: nearZ + 100 };
   }
 
-  private createBlock(folderPath: string): FolderBlock {
-    const initialWidth = 8;
-    const initialDepth = 6;
+  /**
+   * AABB overlap test using the spatial grid index.
+   * Only checks candidates from overlapping grid cells instead of all plots.
+   */
+  private overlapsAny(cx: number, cz: number, lotW: number, lotD: number): boolean {
+    // Collect unique candidate paths from the grid cells this AABB covers
+    const cellKeys = this.getCellsForAABB(cx, cz, lotW, lotD);
+    const checked = new Set<string>();
 
-    // Place block in a grid
-    const x = this.nextBlockX + initialWidth / 2;
-    const z = this.nextBlockZ + initialDepth / 2;
-
-    this.blocksInRow++;
-    this.blockRowMaxDepth = Math.max(this.blockRowMaxDepth, initialDepth);
-
-    if (this.blocksInRow >= this.maxBlocksPerRow) {
-      this.nextBlockX = 0;
-      this.nextBlockZ += this.blockRowMaxDepth + BLOCK_GAP;
-      this.blockRowMaxDepth = 0;
-      this.blocksInRow = 0;
-    } else {
-      this.nextBlockX += initialWidth + BLOCK_GAP;
+    for (const key of cellKeys) {
+      const set = this.grid.get(key);
+      if (!set) continue;
+      for (const path of set) {
+        if (checked.has(path)) continue;
+        checked.add(path);
+        const p = this.plots.get(path)!;
+        if (
+          Math.abs(cx - p.x) < lotW + p.lotW &&
+          Math.abs(cz - p.z) < lotD + p.lotD
+        ) {
+          return true;
+        }
+      }
     }
-
-    return {
-      folderPath,
-      x,
-      z,
-      width: initialWidth,
-      depth: initialDepth,
-      buildings: [],
-      nextX: BLOCK_PADDING,
-      nextZ: BLOCK_PADDING,
-      rowHeight: 0,
-    };
+    return false;
   }
+
+  // ---------------------------------------------------------------------------
+  // Capped events log
+  // ---------------------------------------------------------------------------
+
+  private pushEvent(event: LayoutEvent) {
+    if (this.events.length >= MAX_EVENTS) {
+      // Drop the oldest half to avoid repeated shifting
+      this.events = this.events.slice(MAX_EVENTS >> 1);
+    }
+    this.events.push(event);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function getFolderPath(filePath: string): string {
+  const parts = filePath.split("/");
+  if (parts.length <= 1) return "__root__";
+  return parts.slice(0, -1).join("/");
+}
+
+function getFileExt(filePath: string): string {
+  return filePath.split(".").pop()?.toLowerCase() ?? "";
+}
+
+function getBuildingSize(filePath: string, lines: number): { width: number; depth: number } {
+  const ext = getFileExt(filePath);
+
+  if (DOC_EXTS.has(ext)) {
+    // Libraries/museums: wide and square footprint, scales gently with size
+    const base = 1.0 + Math.sqrt(Math.min(lines, 3000)) * 0.03;
+    const side = Math.min(3.5, Math.max(1.0, base));
+    return { width: side, depth: side * 0.85 };
+  }
+
+  if (DATA_EXTS.has(ext)) {
+    // Trees: compact footprint, just enough for the trunk
+    const base = 0.6 + Math.sqrt(Math.min(lines, 5000)) * 0.01;
+    const side = Math.min(1.5, Math.max(0.5, base));
+    return { width: side, depth: side };
+  }
+
+  // Source code: default
+  const base = 0.8 + Math.sqrt(Math.max(1, lines)) * 0.08;
+  const width = Math.min(3, Math.max(0.6, base));
+  const depth = Math.min(2.5, Math.max(0.5, base * 0.8));
+  return { width, depth };
 }
