@@ -277,13 +277,13 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
       {/* Sign text */}
       <Text
         position={[0, 0, 0.025]}
-        fontSize={Math.min(0.22, w * 0.18)}
-        maxWidth={w * 0.88}
+        fontSize={Math.min(0.22, w * 0.88 / Math.max(1, fileName.length) * 1.8)}
         color="#ffffff"
         anchorX="center"
         anchorY="middle"
         outlineWidth={0.01}
         outlineColor="#000000"
+        whiteSpace="nowrap"
         font={undefined}
       >
         {fileName}
