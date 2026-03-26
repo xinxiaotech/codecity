@@ -5,6 +5,7 @@ import type { LayoutRect } from "../types";
 import { Building, type BuildingHoverInfo } from "./Building";
 import { Tree, type TreeHoverInfo } from "./Tree";
 import { CityGround } from "./CityGround";
+import { GroundPatches } from "./GroundPatches";
 import { Roads } from "./Roads";
 import type { DepEdge } from "../hooks/useCityData";
 
@@ -104,6 +105,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
 
       {/* Ground */}
       <CityGround layouts={layouts} />
+      <GroundPatches layouts={layouts} />
 
       {/* Dependency roads between files */}
       {deps && deps.length > 0 && <Roads layouts={layouts} deps={deps} highlightedPaths={highlightedPaths} />}

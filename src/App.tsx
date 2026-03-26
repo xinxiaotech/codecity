@@ -85,6 +85,17 @@ export default function App() {
           <span style={s.repoName}>{cityData.repoName || "..."}</span>
         </div>
         <div style={s.toolbarRight}>
+          {cityData.timelapse.playing ? (
+            <>
+              <span style={s.toolbarStat}>
+                Timelapse {cityData.timelapse.currentEvent}/{cityData.timelapse.totalEvents}
+              </span>
+              <button onClick={cityData.stopTimelapse} style={s.timelapseBtn}>Stop</button>
+            </>
+          ) : (
+            <button onClick={() => cityData.startTimelapse()} style={s.timelapseBtn}>Timelapse</button>
+          )}
+          <span style={s.separator} />
           <span style={s.toolbarStat}>{currentSnapshot?.files.size ?? 0} files</span>
           <span style={s.separator} />
           <span style={s.toolbarStat}>{cityData.deps.length} deps</span>
@@ -200,6 +211,17 @@ const s: Record<string, React.CSSProperties> = {
     width: 1,
     height: 16,
     background: "#27272a",
+  },
+  timelapseBtn: {
+    fontSize: 10,
+    fontWeight: 600,
+    color: "#00d4aa",
+    background: "transparent",
+    border: "1px solid #27272a",
+    borderRadius: 4,
+    padding: "2px 8px",
+    cursor: "pointer",
+    fontFamily: "'SF Mono', 'Fira Code', monospace",
   },
   toolbarStat: {
     fontSize: 10,

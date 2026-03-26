@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import type { FileEvent } from "../types";
 
 export interface CitySnapshot {
@@ -19,6 +19,14 @@ export interface CityData {
   activeEditing: Set<string>;
   activeSurveying: Set<string>;
   deps: DepEdge[];
+  timelapse: {
+    playing: boolean;
+    progress: number; // 0-1
+    totalEvents: number;
+    currentEvent: number;
+  };
+  startTimelapse: (speed?: number) => void;
+  stopTimelapse: () => void;
 }
 
 const WS_URL = "ws://localhost:3001";
@@ -37,6 +45,84 @@ export function useCityData(): CityData {
   const surveyTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const pendingEventsRef = useRef<FileEvent[]>([]);
   const batchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Timelapse state
+  const [timelapsePlaying, setTimelapsePlaying] = useState(false);
+  const [timelapseProgress, setTimelapseProgress] = useState(0);
+  const [timelapseTotalEvents, setTimelapseTotalEvents] = useState(0);
+  const [timelapseCurrentEvent, setTimelapseCurrentEvent] = useState(0);
+  const timelapseAbortRef = useRef(false);
+
+  const startTimelapse = useCallback(async (speed = 20) => {
+    try {
+      const res = await fetch("http://localhost:3001/api/timelapse");
+      const data = await res.json();
+      if (!data.events || data.events.length === 0) return;
+
+      setTimelapsePlaying(true);
+      setTimelapseTotalEvents(data.events.length);
+      setTimelapseCurrentEvent(0);
+      timelapseAbortRef.current = false;
+
+      const events = data.events as Array<{ action: string; path: string; timestamp: number }>;
+      const startTs = events[0].timestamp;
+      const endTs = events[events.length - 1].timestamp;
+      const totalSpan = Math.max(1, endTs - startTs);
+
+      for (let i = 0; i < events.length; i++) {
+        if (timelapseAbortRef.current) break;
+
+        const evt = events[i];
+        setTimelapseCurrentEvent(i + 1);
+        setTimelapseProgress((evt.timestamp - startTs) / totalSpan);
+
+        // Simulate as hook event
+        if (evt.action === "read") {
+          setActiveSurveying((prev) => {
+            const next = new Set(prev);
+            next.add(evt.path);
+            return next;
+          });
+          setTimeout(() => {
+            setActiveSurveying((prev) => {
+              const next = new Set(prev);
+              next.delete(evt.path);
+              return next;
+            });
+          }, 2000);
+        } else {
+          setActiveEditing((prev) => {
+            const next = new Set(prev);
+            next.add(evt.path);
+            return next;
+          });
+          setTimeout(() => {
+            setActiveEditing((prev) => {
+              const next = new Set(prev);
+              next.delete(evt.path);
+              return next;
+            });
+          }, 3000);
+        }
+
+        // Delay between events — compress time by speed factor
+        if (i < events.length - 1) {
+          const gap = events[i + 1].timestamp - evt.timestamp;
+          const delay = Math.min(500, Math.max(30, gap / speed));
+          await new Promise((r) => setTimeout(r, delay));
+        }
+      }
+
+      setTimelapsePlaying(false);
+    } catch {
+      setTimelapsePlaying(false);
+    }
+  }, []);
+
+  const stopTimelapse = useCallback(() => {
+    timelapseAbortRef.current = true;
+    setTimelapsePlaying(false);
+  }, []);
 
   // Single effect with [] deps — stable, never re-runs, no leaked connections
   useEffect(() => {
@@ -180,5 +266,13 @@ export function useCityData(): CityData {
     activeEditing,
     activeSurveying,
     deps,
+    timelapse: {
+      playing: timelapsePlaying,
+      progress: timelapseProgress,
+      totalEvents: timelapseTotalEvents,
+      currentEvent: timelapseCurrentEvent,
+    },
+    startTimelapse,
+    stopTimelapse,
   };
 }

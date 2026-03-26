@@ -39,20 +39,55 @@ const clients = new Set<WebSocket>();
 const ALWAYS_IGNORED_DIRS = new Set([
   "node_modules", ".git", "__pycache__", ".next", ".cache", ".turbo",
   ".wrangler", ".vercel", ".netlify", ".serverless",
+  ".expo", ".kotlin", ".metro-health-check",
+  "Pods", // CocoaPods
 ]);
 const ALWAYS_IGNORED_FILES = new Set([
   "package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".DS_Store",
 ]);
 
+// Load .gitignore from root AND subdirectories (up to depth 3)
 let ig: Ignore = ignore();
-const gitignorePath = path.join(resolvedDir, ".gitignore");
-if (fs.existsSync(gitignorePath)) {
-  const raw = fs.readFileSync(gitignorePath, "utf-8");
-  ig = ignore().add(raw);
-  console.log(`  Loaded .gitignore (${raw.split("\n").filter(l => l.trim() && !l.startsWith("#")).length} rules)`);
+let gitignoreCount = 0;
+function loadGitignores(dir: string, depth: number) {
+  if (depth > 3) return;
+  const giPath = path.join(dir, ".gitignore");
+  if (fs.existsSync(giPath)) {
+    try {
+      const raw = fs.readFileSync(giPath, "utf-8");
+      const rel = path.relative(resolvedDir, dir);
+      const lines = raw.split("\n").filter(l => l.trim() && !l.startsWith("#"));
+      // Prefix patterns with the subdirectory path
+      if (rel) {
+        ig.add(lines.map(l => {
+          // Handle negation patterns
+          if (l.startsWith("!")) return "!" + rel.replace(/\\/g, "/") + "/" + l.slice(1);
+          // Handle absolute patterns (leading /)
+          const pattern = l.startsWith("/") ? l.slice(1) : l;
+          return rel.replace(/\\/g, "/") + "/" + pattern;
+        }));
+      } else {
+        ig.add(raw);
+      }
+      gitignoreCount += lines.length;
+    } catch { /* skip unreadable */ }
+  }
+  // Scan subdirs (skip ignored ones)
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (ALWAYS_IGNORED_DIRS.has(entry.name)) continue;
+      if (entry.name.startsWith(".")) continue;
+      loadGitignores(path.join(dir, entry.name), depth + 1);
+    }
+  } catch { /* skip unreadable dirs */ }
 }
+loadGitignores(resolvedDir, 0);
 // Always add common junk dirs so they're skipped even without a .gitignore
-ig.add(["node_modules", ".git", "__pycache__"]);
+ig.add(["node_modules", ".git", "__pycache__", ".expo"]);
+if (gitignoreCount > 0) {
+  console.log(`  Loaded .gitignore rules (${gitignoreCount} rules)`);
+}
 
 function shouldIgnore(filePath: string): boolean {
   const rel = path.relative(resolvedDir, filePath);
@@ -385,13 +420,85 @@ const server = createServer((req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
 
   if (url.pathname === "/api/snapshot") {
-    // Current state of all files
-    const files = Array.from(fileLines.entries()).map(([p, lines]) => ({
-      path: p,
-      lines,
-    }));
+    const MAX_BUILDINGS = 100;
+
+    // Build folder tree to detect large folders
+    const allFiles = Array.from(fileLines.entries());
+    const totalFiles = allFiles.length;
+
+    if (totalFiles <= MAX_BUILDINGS) {
+      // Small project — no collapsing needed
+      const files = allFiles.map(([p, lines]) => ({ path: p, lines }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ repoName: path.basename(resolvedDir), files }));
+      return;
+    }
+
+    // Count direct children per folder (files + subdirs)
+    const folderChildCount = new Map<string, number>();
+    const folderTotalLines = new Map<string, number>();
+    for (const [filePath, lines] of allFiles) {
+      const parts = filePath.split("/");
+      // Count this file toward each ancestor folder
+      for (let i = 1; i <= parts.length - 1; i++) {
+        const folder = parts.slice(0, i).join("/");
+        folderTotalLines.set(folder, (folderTotalLines.get(folder) || 0) + lines);
+      }
+      // Direct parent gets a child count
+      if (parts.length > 1) {
+        const parent = parts.slice(0, -1).join("/");
+        folderChildCount.set(parent, (folderChildCount.get(parent) || 0) + 1);
+      }
+    }
+
+    // Progressively collapse largest folders until under MAX_BUILDINGS
+    // Sort folders by child count descending — collapse biggest first
+    const foldersToCollapse = new Set<string>();
+    const sortedFolders = [...folderChildCount.entries()]
+      .filter(([, count]) => count >= 2) // only collapse folders with 2+ files
+      .sort((a, b) => b[1] - a[1]); // biggest first
+
+    let currentBuildingCount = totalFiles;
+    for (const [folder, childCount] of sortedFolders) {
+      if (currentBuildingCount <= MAX_BUILDINGS) break;
+      // Skip if a parent folder is already collapsed
+      let parentCollapsed = false;
+      for (const cf of foldersToCollapse) {
+        if (folder.startsWith(cf + "/")) { parentCollapsed = true; break; }
+      }
+      if (parentCollapsed) continue;
+      foldersToCollapse.add(folder);
+      currentBuildingCount -= (childCount - 1);
+    }
+
+    // Build output: collapsed folders become single entries, other files pass through
+    const result: Array<{ path: string; lines: number }> = [];
+    const collapsed = new Set<string>();
+
+    for (const [filePath, lines] of allFiles) {
+      // Check if this file is inside a collapsed folder
+      let isCollapsed = false;
+      for (const folder of foldersToCollapse) {
+        if (filePath.startsWith(folder + "/")) {
+          if (!collapsed.has(folder)) {
+            // First file in this collapsed folder — emit the folder as a building
+            collapsed.add(folder);
+            result.push({
+              path: folder + "/",
+              lines: folderTotalLines.get(folder) || 0,
+            });
+          }
+          isCollapsed = true;
+          break;
+        }
+      }
+      if (!isCollapsed) {
+        result.push({ path: filePath, lines });
+      }
+    }
+
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ repoName: path.basename(resolvedDir), files }));
+    res.end(JSON.stringify({ repoName: path.basename(resolvedDir), files: result }));
     return;
   }
 
@@ -430,6 +537,102 @@ const server = createServer((req, res) => {
         events,
       })
     );
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Timelapse from Claude Code JSONL session history
+  // ---------------------------------------------------------------------------
+  if (url.pathname === "/api/timelapse") {
+    const homeDir = process.env.HOME || process.env.USERPROFILE || "";
+    // Convert resolved dir to Claude's project key format
+    const projectKey = resolvedDir.replace(/\//g, "-");
+    const sessionsDir = path.join(homeDir, ".claude", "projects", projectKey);
+
+    try {
+      if (!fs.existsSync(sessionsDir)) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "No Claude Code sessions found for this project", dir: sessionsDir }));
+        return;
+      }
+
+      // Find all session JSONL files (exclude subagents)
+      const sessionFiles = fs.readdirSync(sessionsDir)
+        .filter((f: string) => f.endsWith(".jsonl"))
+        .map((f: string) => path.join(sessionsDir, f));
+
+      interface TimelapseEvent {
+        tool: string;
+        action: string;
+        path: string;
+        timestamp: number;
+        sessionId: string;
+      }
+
+      const allEvents: TimelapseEvent[] = [];
+
+      for (const sessionFile of sessionFiles) {
+        const sessionId = path.basename(sessionFile, ".jsonl");
+        const content = fs.readFileSync(sessionFile, "utf-8");
+        const lines = content.split("\n").filter(Boolean);
+
+        for (const line of lines) {
+          try {
+            const obj = JSON.parse(line);
+            if (obj.type !== "assistant" || !obj.message?.content) continue;
+
+            for (const block of obj.message.content) {
+              if (block.type !== "tool_use") continue;
+              const toolName = block.name;
+              if (!["Read", "Write", "Edit", "Bash"].includes(toolName)) continue;
+
+              let filePath = block.input?.file_path;
+              if (!filePath && toolName === "Bash") continue; // skip bash without file
+
+              // Make path relative to project
+              if (filePath && filePath.startsWith(resolvedDir)) {
+                filePath = path.relative(resolvedDir, filePath).replace(/\\/g, "/");
+              } else if (filePath && filePath.startsWith("/")) {
+                continue; // skip files outside project
+              }
+
+              if (!filePath) continue;
+
+              const action = toolName === "Read" ? "read"
+                : toolName === "Write" ? "created"
+                : toolName === "Edit" ? "modified"
+                : "changed";
+
+              allEvents.push({
+                tool: toolName,
+                action,
+                path: filePath,
+                timestamp: obj.timestamp || 0,
+                sessionId,
+              });
+            }
+          } catch {
+            // skip malformed lines
+          }
+        }
+      }
+
+      // Sort by timestamp
+      allEvents.sort((a, b) => a.timestamp - b.timestamp);
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        repoName: path.basename(resolvedDir),
+        projectKey,
+        sessions: sessionFiles.length,
+        events: allEvents,
+        startTime: allEvents[0]?.timestamp || 0,
+        endTime: allEvents[allEvents.length - 1]?.timestamp || 0,
+      }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Failed to parse sessions", details: String(err) }));
+    }
     return;
   }
 
