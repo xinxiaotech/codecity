@@ -1,13 +1,13 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 
-// Low-poly tree
-function Tree({ position }: { position: [number, number, number] }) {
-  // Slight random variation
-  const scale = 0.6 + Math.random() * 0.5;
-  const tilt = (Math.random() - 0.5) * 0.1;
+// Low-poly tree — uses seeded rng from index for determinism
+function DecoTree({ position, seed }: { position: [number, number, number]; seed: number }) {
+  const rng = mulberry32(seed);
+  const scale = 0.6 + rng() * 0.5;
+  const tilt = (rng() - 0.5) * 0.1;
   return (
-    <group position={position} scale={scale} rotation={[tilt, Math.random() * Math.PI * 2, 0]}>
+    <group position={position} scale={scale} rotation={[tilt, rng() * Math.PI * 2, 0]}>
       {/* Trunk */}
       <mesh position={[0, 0.3, 0]}>
         <cylinderGeometry args={[0.06, 0.08, 0.6, 6]} />
@@ -31,8 +31,8 @@ function Tree({ position }: { position: [number, number, number] }) {
 }
 
 // Round bush tree (variety)
-function BushTree({ position }: { position: [number, number, number] }) {
-  const scale = 0.5 + Math.random() * 0.4;
+function BushTree({ position, seed }: { position: [number, number, number]; seed: number }) {
+  const scale = 0.5 + mulberry32(seed)() * 0.4;
   return (
     <group position={position} scale={scale}>
       <mesh position={[0, 0.2, 0]}>
@@ -70,14 +70,7 @@ function StreetLamp({ position }: { position: [number, number, number] }) {
           emissiveIntensity={2}
         />
       </mesh>
-      {/* Light glow */}
-      <pointLight
-        position={[0.25, 1.5, 0]}
-        intensity={0.4}
-        color="#ffcc66"
-        distance={4}
-        decay={2}
-      />
+      {/* Emissive glow — no pointLight needed (16 lights kill perf) */}
     </group>
   );
 }
@@ -193,10 +186,10 @@ export function Decorations({ citySize }: DecorationsProps) {
   return (
     <group>
       {items.trees.map((pos, i) => (
-        <Tree key={`t${i}`} position={pos} />
+        <DecoTree key={`t${i}`} position={pos} seed={i * 7 + 1} />
       ))}
       {items.bushes.map((pos, i) => (
-        <BushTree key={`b${i}`} position={pos} />
+        <BushTree key={`b${i}`} position={pos} seed={i * 13 + 100} />
       ))}
       {items.lamps.map((pos, i) => (
         <StreetLamp key={`l${i}`} position={pos} />

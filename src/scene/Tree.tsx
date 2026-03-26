@@ -1,4 +1,4 @@
-import { useRef, useState, useMemo } from "react";
+import React, { useRef, useState, useMemo } from "react";
 import * as THREE from "three";
 import type { LayoutRect } from "../types";
 
@@ -41,7 +41,7 @@ function hashPath(path: string): number {
 const TRUNK_COLOR = "#6b4226";
 const LEAF_COLORS = ["#2d6e2e", "#3a8c3b", "#4a9e4a", "#357a36", "#2b7d3e"];
 
-export function Tree({ layout, dimmed, onHover, onClick }: TreeProps) {
+export const Tree = React.memo(function Tree({ layout, dimmed, onHover, onClick }: TreeProps) {
   const [hovered, setHovered] = useState(false);
   const groupRef = useRef<THREE.Group>(null);
 
@@ -122,4 +122,7 @@ export function Tree({ layout, dimmed, onHover, onClick }: TreeProps) {
       )}
     </group>
   );
-}
+}, (prev, next) =>
+  prev.layout === next.layout &&
+  prev.dimmed === next.dimmed
+);

@@ -1,6 +1,5 @@
-import { useRef, useState, useMemo } from "react";
+import React, { useRef, useState, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-// Tooltip data passed up via onHover callback
 import * as THREE from "three";
 import type { LayoutRect } from "../types";
 import { getBuildingStyle, type BuildingType } from "../utils/colors";
@@ -136,8 +135,7 @@ function BuildingHighlight({ width, depth, height, color }: {
         <boxGeometry args={[width + margin, height, depth + margin]} />
         <meshBasicMaterial color={color} transparent opacity={0.06} depthWrite={false} />
       </mesh>
-      {/* Point light for glow on surroundings */}
-      <pointLight position={[0, height * 0.3, 0]} color={color} intensity={0.5} distance={3} decay={2} />
+      {/* Emissive glow only — no point light (expensive per-fragment cost) */}
     </group>
   );
 }
@@ -164,24 +162,19 @@ function getWindowColor(type: BuildingType): string {
   }
 }
 
-export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHover, onClick }: BuildingProps) {
-  const groupRef = useRef<THREE.Group>(null);
+export const Building = React.memo(function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHover, onClick }: BuildingProps) {
   const effectsRef = useRef<THREE.Group>(null);
-  const currentHeight = useRef(isNew ? 0.01 : layout.height);
   const [hovered, setHovered] = useState(false);
   const style = useMemo(() => getBuildingStyle(layout.path, layout.height), [layout.path, layout.height]);
 
-  // Quantize floors and windowCols to nearest 2 so small height changes
-  // during animations don't trigger facade texture recreation
   const floors = Math.max(2, Math.round(Math.max(1, Math.round(layout.height / 0.8)) / 2) * 2);
   const windowCols = Math.max(2, Math.round(Math.max(2, Math.floor(Math.max(layout.width, layout.depth) / 0.4)) / 2) * 2);
 
-  // Single-floor texture, tiled vertically by floor count
   const facadeTexture = useMemo(() => {
     const base = createFacadeTexture(
       style.color,
       getWindowColor(style.type),
-      1, // single floor row
+      1,
       windowCols,
       getWindowStyle(style.type)
     );
@@ -199,24 +192,9 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
     return c;
   }, [style.color]);
 
-  useFrame((_, delta) => {
-    if (!groupRef.current) return;
-    const speed = 5;
-    currentHeight.current = THREE.MathUtils.lerp(
-      currentHeight.current,
-      layout.height,
-      Math.min(1, delta * speed)
-    );
-    const h = Math.max(0.01, currentHeight.current);
-    const yScale = h / BASE_HEIGHT;
-    groupRef.current.scale.set(1, yScale, 1);
-    groupRef.current.position.y = h / 2;
-    // Position effects group at ground, pass roof height via Y
-    if (effectsRef.current) {
-      effectsRef.current.position.y = 0;
-      effectsRef.current.userData.roofY = h;
-    }
-  });
+  // Height set directly — no per-frame animation (114 useFrame callbacks was the perf killer)
+  const h = Math.max(0.01, layout.height);
+  const yScale = h / BASE_HEIGHT;
 
   const fileName = layout.path.split("/").pop() ?? layout.path;
   const folder = layout.path.includes("/")
@@ -228,8 +206,8 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
   return (
     <>
     <group
-      ref={groupRef}
-      position={[layout.x, layout.height / 2, layout.z]}
+      position={[layout.x, h / 2, layout.z]}
+      scale={[1, yScale, 1]}
       onClick={(e) => { e.stopPropagation(); onClick?.(layout.path); }}
       onPointerOver={(e) => {
         e.stopPropagation();
@@ -293,7 +271,7 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
       {isEditing && (
         <>
           <DustCloud width={w} depth={d} height={layout.height} />
-          <Crane heightRef={currentHeight} buildingWidth={w} />
+          <Crane height={h} buildingWidth={w} />
           <ConstructionFence width={w} depth={d} />
           <BuildingHighlight width={w} depth={d} height={layout.height} color={HIGHLIGHT_COLORS.editing} />
         </>
@@ -312,7 +290,13 @@ export function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHove
     </group>
     </>
   );
-}
+}, (prev, next) =>
+  prev.layout === next.layout &&
+  prev.isNew === next.isNew &&
+  prev.isEditing === next.isEditing &&
+  prev.isSurveying === next.isSurveying &&
+  prev.dimmed === next.dimmed
+);
 
 const tt = {
   card: {

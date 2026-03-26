@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useState } from "react";
+import { useMemo, useCallback, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
 import type { LayoutRect } from "../types";
@@ -26,15 +26,18 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
   const buildings = useMemo(() => layouts.filter((r) => !r.isFolder && !DATA_EXTS.has(r.extension)), [layouts]);
   const trees = useMemo(() => layouts.filter((r) => !r.isFolder && DATA_EXTS.has(r.extension)), [layouts]);
   const files = useMemo(() => layouts.filter((r) => !r.isFolder), [layouts]);
-  const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+
+  // Hover stored in a ref — does NOT trigger re-render of the scene.
+  // Only the tooltip in App.tsx re-renders (via the onBuildingHoverProp callback).
+  const hoveredPathRef = useRef<string | null>(null);
 
   const onBuildingHover = useCallback((info: BuildingHoverInfo | null) => {
-    setHoveredPath(info?.path ?? null);
+    hoveredPathRef.current = info?.path ?? null;
     onBuildingHoverProp?.(info);
   }, [onBuildingHoverProp]);
 
   const onTreeHover = useCallback((info: TreeHoverInfo | null) => {
-    setHoveredPath(info?.path ?? null);
+    hoveredPathRef.current = info?.path ?? null;
     if (info) {
       onBuildingHoverProp?.({
         ...info,
@@ -47,10 +50,10 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
     }
   }, [onBuildingHoverProp]);
 
-  // Collect all highlighted file paths (editing, surveying, new, or hovered)
+  // Highlighted paths — only editing/surveying/new files trigger dimming.
+  // Hover is excluded so it doesn't cause mass re-renders.
   const highlightedPaths = useMemo(() => {
     const s = new Set<string>();
-    if (hoveredPath) s.add(hoveredPath);
     if (activeEditing) for (const p of activeEditing) s.add(p);
     if (activeSurveying) for (const p of activeSurveying) s.add(p);
     if (previousPaths) {
@@ -59,14 +62,13 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
       }
     }
     return s;
-  }, [hoveredPath, activeEditing, activeSurveying, previousPaths, files]);
+  }, [activeEditing, activeSurveying, previousPaths, files]);
 
   const hasHighlighted = highlightedPaths.size > 0;
 
   return (
     <Canvas
       camera={{ position: [25, 30, 25], fov: 50, near: 0.1, far: 1000 }}
-      shadows
     >
       {/* Bright blue sky */}
       <color attach="background" args={["#4da6e8"]} />
@@ -74,20 +76,11 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
       {/* Warm ambient */}
       <ambientLight intensity={0.6} color="#ffffff" />
 
-      {/* Sun */}
+      {/* Sun — no shadow map (was rendering all ~1200 meshes twice per frame) */}
       <directionalLight
         position={[50, 80, 40]}
         intensity={1.4}
         color="#fff8e8"
-        castShadow
-        shadow-mapSize-width={2048}
-        shadow-mapSize-height={2048}
-        shadow-camera-near={0.5}
-        shadow-camera-far={200}
-        shadow-camera-left={-60}
-        shadow-camera-right={60}
-        shadow-camera-top={60}
-        shadow-camera-bottom={-60}
       />
 
       {/* Fill light from opposite side */}
