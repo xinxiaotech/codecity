@@ -1,6 +1,8 @@
 import { useMemo, useCallback, useRef } from "react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Text } from "@react-three/drei";
+import { EffectComposer, Outline, Selection, Select } from "@react-three/postprocessing";
+import { BlendFunction, KernelSize } from "postprocessing";
 import type { LayoutRect } from "../types";
 import { Building, type BuildingHoverInfo } from "./Building";
 import { Tree, type TreeHoverInfo } from "./Tree";
@@ -63,8 +65,6 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
     return s;
   }, [activeEditing, activeSurveying, previousPaths, files]);
 
-  const hasHighlighted = highlightedPaths.size > 0;
-
   return (
     <Canvas
       camera={{ position: [25, 30, 25], fov: 50, near: 0.1, far: 1000 }}
@@ -103,6 +103,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
         maxDistance={150}
       />
 
+      <Selection>
       {/* Ground */}
       <CityGround layouts={layouts} />
       <GroundPatches layouts={layouts} />
@@ -115,7 +116,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
         const isNew = previousPaths ? !previousPaths.has(f.path) : false;
         const isEditing = activeEditing?.has(f.path) ?? false;
         const isSurveying = activeSurveying?.has(f.path) ?? false;
-        const isHighlighted = isEditing || isSurveying || isNew;
+        const selected = isEditing || isSurveying || isNew;
         return (
           <Building
             key={f.path}
@@ -123,7 +124,7 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
             isNew={isNew}
             isEditing={isEditing}
             isSurveying={isSurveying}
-            dimmed={hasHighlighted && !isHighlighted}
+            selected={selected}
             onHover={onBuildingHover}
             onClick={onBuildingClick}
           />
@@ -135,11 +136,24 @@ export function CityScene({ layouts, previousPaths, activeEditing, activeSurveyi
         <Tree
           key={f.path}
           layout={f}
-          dimmed={hasHighlighted && !highlightedPaths.has(f.path)}
           onHover={onTreeHover}
           onClick={onBuildingClick}
         />
       ))}
+
+      <EffectComposer autoClear={false}>
+        <Outline
+          blendFunction={BlendFunction.ALPHA}
+          edgeStrength={3}
+          pulseSpeed={0.4}
+          visibleEdgeColor={0xffffff}
+          hiddenEdgeColor={0xffffff}
+          blur
+          kernelSize={KernelSize.SMALL}
+          xRay={true}
+        />
+      </EffectComposer>
+      </Selection>
     </Canvas>
   );
 }

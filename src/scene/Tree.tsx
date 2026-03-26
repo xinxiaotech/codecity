@@ -4,7 +4,6 @@ import type { LayoutRect } from "../types";
 
 interface TreeProps {
   layout: LayoutRect;
-  dimmed?: boolean;
   onHover?: (info: TreeHoverInfo | null) => void;
   onClick?: (path: string) => void;
 }
@@ -41,7 +40,7 @@ function hashPath(path: string): number {
 const TRUNK_COLOR = "#6b4226";
 const LEAF_COLORS = ["#2d6e2e", "#3a8c3b", "#4a9e4a", "#357a36", "#2b7d3e"];
 
-export const Tree = React.memo(function Tree({ layout, dimmed, onHover, onClick }: TreeProps) {
+export const Tree = React.memo(function Tree({ layout, onHover, onClick }: TreeProps) {
   const [hovered, setHovered] = useState(false);
   const groupRef = useRef<THREE.Group>(null);
 
@@ -64,7 +63,6 @@ export const Tree = React.memo(function Tree({ layout, dimmed, onHover, onClick 
   const trunkR = 0.08 * scale;
   const canopyR = 0.5 * scale;
   const canopyY = trunkH + canopyR * 0.6;
-  const opacity = dimmed ? 0.25 : 1;
 
   return (
     <group
@@ -83,34 +81,19 @@ export const Tree = React.memo(function Tree({ layout, dimmed, onHover, onClick 
       {/* Trunk */}
       <mesh position={[0, trunkH / 2, 0]}>
         <cylinderGeometry args={[trunkR * 0.6, trunkR, trunkH, 6]} />
-        <meshStandardMaterial
-          color={TRUNK_COLOR}
-          roughness={0.9}
-          transparent={dimmed}
-          opacity={opacity}
-        />
+        <meshStandardMaterial color={TRUNK_COLOR} roughness={0.9} />
       </mesh>
 
       {/* Main canopy — dodecahedron for organic look */}
       <mesh position={[0, canopyY, 0]}>
         <dodecahedronGeometry args={[canopyR, 1]} />
-        <meshStandardMaterial
-          color={hovered ? "#5ccc5c" : leafColor}
-          roughness={0.8}
-          transparent={dimmed}
-          opacity={opacity}
-        />
+        <meshStandardMaterial color={hovered ? "#5ccc5c" : leafColor} roughness={0.8} />
       </mesh>
 
       {/* Second smaller canopy cluster offset for fullness */}
       <mesh position={[canopyR * 0.3, canopyY + canopyR * 0.3, canopyR * 0.2]}>
         <dodecahedronGeometry args={[canopyR * 0.65, 1]} />
-        <meshStandardMaterial
-          color={hovered ? "#5ccc5c" : leafColor}
-          roughness={0.8}
-          transparent={dimmed}
-          opacity={opacity}
-        />
+        <meshStandardMaterial color={hovered ? "#5ccc5c" : leafColor} roughness={0.8} />
       </mesh>
 
       {/* Hover ring */}
@@ -123,6 +106,5 @@ export const Tree = React.memo(function Tree({ layout, dimmed, onHover, onClick 
     </group>
   );
 }, (prev, next) =>
-  prev.layout === next.layout &&
-  prev.dimmed === next.dimmed
+  prev.layout === next.layout
 );

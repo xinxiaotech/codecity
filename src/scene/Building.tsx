@@ -1,6 +1,7 @@
 import React, { useRef, useState, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import { Text } from "@react-three/drei";
+import { Select } from "@react-three/postprocessing";
 import * as THREE from "three";
 import type { LayoutRect } from "../types";
 import { getBuildingStyle, type BuildingType } from "../utils/colors";
@@ -14,7 +15,7 @@ interface BuildingProps {
   isNew?: boolean;
   isEditing?: boolean;
   isSurveying?: boolean;
-  dimmed?: boolean;
+  selected?: boolean;
   onHover?: (info: BuildingHoverInfo | null) => void;
   onClick?: (path: string) => void;
 }
@@ -164,7 +165,7 @@ function getWindowColor(type: BuildingType): string {
   }
 }
 
-export const Building = React.memo(function Building({ layout, isNew, isEditing, isSurveying, dimmed, onHover, onClick }: BuildingProps) {
+export const Building = React.memo(function Building({ layout, isNew, isEditing, isSurveying, selected, onHover, onClick }: BuildingProps) {
   const effectsRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
   const style = useMemo(() => getBuildingStyle(layout.path, layout.height), [layout.path, layout.height]);
@@ -205,6 +206,7 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
   const d = layout.depth;
   return (
     <>
+    <Select enabled={!!selected}>
     <group
       position={[layout.x, h / 2, layout.z]}
       scale={[1, yScale, 1]}
@@ -229,38 +231,38 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
       {/* Front face (+Z) */}
       <mesh position={[0, 0, d / 2]} rotation={[0, 0, 0]}>
         <planeGeometry args={[w, BASE_HEIGHT]} />
-        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} />
       </mesh>
       {/* Back face (-Z) */}
       <mesh position={[0, 0, -d / 2]} rotation={[0, Math.PI, 0]}>
         <planeGeometry args={[w, BASE_HEIGHT]} />
-        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} />
       </mesh>
       {/* Right face (+X) */}
       <mesh position={[w / 2, 0, 0]} rotation={[0, Math.PI / 2, 0]}>
         <planeGeometry args={[d, BASE_HEIGHT]} />
-        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} />
       </mesh>
       {/* Left face (-X) */}
       <mesh position={[-w / 2, 0, 0]} rotation={[0, -Math.PI / 2, 0]}>
         <planeGeometry args={[d, BASE_HEIGHT]} />
-        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial map={facadeTexture} roughness={0.6} metalness={0.15} />
       </mesh>
       {/* Top (roof) */}
       <mesh position={[0, BASE_HEIGHT / 2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
         <planeGeometry args={[w, d]} />
-        <meshStandardMaterial color={roofColor} roughness={0.8} metalness={0.2} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial color={roofColor} roughness={0.8} metalness={0.2} />
       </mesh>
       {/* Bottom */}
       <mesh position={[0, -BASE_HEIGHT / 2, 0]} rotation={[Math.PI / 2, 0, 0]}>
         <planeGeometry args={[w, d]} />
-        <meshStandardMaterial color="#222" transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial color="#222" />
       </mesh>
 
       {/* Roof ledge */}
       <mesh position={[0, BASE_HEIGHT / 2 + 0.015, 0]}>
         <boxGeometry args={[w + 0.06, 0.03, d + 0.06]} />
-        <meshStandardMaterial color={roofColor} metalness={0.3} roughness={0.5} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+        <meshStandardMaterial color={roofColor} metalness={0.3} roughness={0.5} />
       </mesh>
 
 
@@ -281,7 +283,7 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
         <group rotation={[-0.35, 0, 0]}>
           <mesh>
             <boxGeometry args={[edge.signW * 0.95, 0.3, 0.04]} />
-            <meshStandardMaterial color={style.color} roughness={0.3} metalness={0.4} transparent={dimmed} opacity={dimmed ? 0.25 : 1} />
+            <meshStandardMaterial color={style.color} roughness={0.3} metalness={0.4} />
           </mesh>
           <Text
             position={[0, 0, 0.025]}
@@ -291,8 +293,6 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
             anchorY="middle"
             outlineWidth={0.01}
             outlineColor="#000000"
-            outlineOpacity={dimmed ? 0.25 : 1}
-            fillOpacity={dimmed ? 0.25 : 1}
             whiteSpace="nowrap"
             font={undefined}
           >
@@ -301,6 +301,7 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
         </group>
       </group>
     ))}
+    </Select>
 
     {/* Effects — not scaled, positioned at building ground level */}
     <group ref={effectsRef} position={[layout.x, 0, layout.z]}>
@@ -331,7 +332,7 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
   prev.isNew === next.isNew &&
   prev.isEditing === next.isEditing &&
   prev.isSurveying === next.isSurveying &&
-  prev.dimmed === next.dimmed
+  prev.selected === next.selected
 );
 
 const tt = {
