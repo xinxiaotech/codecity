@@ -5,6 +5,7 @@ import { StableLayoutManager } from "./layout/stable-layout";
 import { CityScene } from "./scene/CityScene";
 import { Timeline } from "./timeline/Timeline";
 import { FilePanel } from "./components/FilePanel";
+import { ProjectSelector } from "./components/ProjectSelector";
 import type { BuildingHoverInfo } from "./scene/Building";
 
 export default function App() {
@@ -15,6 +16,18 @@ export default function App() {
   const [hoverInfo, setHoverInfo] = useState<BuildingHoverInfo | null>(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+
+  // Reset layout and selection when project changes
+  const prevProjectRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (cityData.currentProjectId !== prevProjectRef.current) {
+      prevProjectRef.current = cityData.currentProjectId;
+      layoutManagerRef.current = new StableLayoutManager();
+      previousPathsRef.current = new Set();
+      setSelectedFile(null);
+      setHoverInfo(null);
+    }
+  }, [cityData.currentProjectId]);
 
   const onBuildingHover = useCallback((info: BuildingHoverInfo | null) => {
     setHoverInfo(info);
@@ -34,9 +47,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Trigger resize so R3F canvas recalculates when panel opens/closes
   useEffect(() => {
-    // Fire twice — once for layout, once for R3F to catch up
     const t = setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
     return () => clearTimeout(t);
   }, [selectedFile]);
@@ -53,13 +64,13 @@ export default function App() {
     if (currentSnapshot) {
       previousPathsRef.current = new Set(currentSnapshot.files.keys());
     }
-    // On first load, prev is empty — treat all files as existing (not "new")
     if (prev.size === 0 && currentSnapshot && currentSnapshot.files.size > 0) {
       return new Set(currentSnapshot.files.keys());
     }
     return prev;
   }, [currentSnapshot]);
 
+  // Show project picker when not connected to any project and no snapshots
   if (!cityData.connected && cityData.snapshots.length === 0) {
     return (
       <div style={s.splashWrap}>
@@ -67,9 +78,44 @@ export default function App() {
           <div style={s.splashTitle}>CodeCity</div>
           <div style={s.splashSub}>Real-time 3D codebase visualization</div>
           <div style={s.splashDivider} />
-          <div style={s.splashLabel}>Start the watcher server:</div>
-          <code style={s.splashCode}>npx tsx server/index.ts /path/to/your/project</code>
-          <div style={s.splashHint}>Then open this page. The city will build as files change.</div>
+          <div style={s.splashLabel}>Start the server:</div>
+          <code style={s.splashCode}>npx tsx server/index.ts</code>
+          <div style={s.splashHint}>
+            Start without arguments for multi-project mode, or pass a path for single-project mode.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Connected but no project selected yet (multi-project mode, waiting for selection)
+  if (cityData.connected && cityData.snapshots.length === 0 && cityData.projects.length > 0) {
+    return (
+      <div style={s.splashWrap}>
+        <div style={{ ...s.splashCard, maxWidth: 500 }}>
+          <div style={s.splashTitle}>CodeCity</div>
+          <div style={s.splashSub}>Select a project to visualize</div>
+          <div style={s.splashDivider} />
+          <div style={s.projectList}>
+            {cityData.projects.map((p) => (
+              <button
+                key={p.id}
+                style={s.projectItem}
+                onClick={() => cityData.switchProject(p.id)}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.background = "#1a2a24";
+                  (e.currentTarget as HTMLElement).style.borderColor = "#00d4aa44";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.background = "#09090b";
+                  (e.currentTarget as HTMLElement).style.borderColor = "#27272a";
+                }}
+              >
+                <span style={s.projectName}>{p.name}</span>
+                <span style={s.projectPath}>{p.path}</span>
+              </button>
+            ))}
+          </div>
         </div>
       </div>
     );
@@ -82,7 +128,15 @@ export default function App() {
         <div style={s.toolbarLeft}>
           <span style={s.logo}>CodeCity</span>
           <span style={s.separator} />
-          <span style={s.repoName}>{cityData.repoName || "..."}</span>
+          {cityData.projects.length > 0 ? (
+            <ProjectSelector
+              projects={cityData.projects}
+              currentId={cityData.currentProjectId}
+              onSelect={cityData.switchProject}
+            />
+          ) : (
+            <span style={s.repoName}>{cityData.repoName || "..."}</span>
+          )}
         </div>
         <div style={s.toolbarRight}>
           {cityData.timelapse.playing ? (
@@ -105,7 +159,6 @@ export default function App() {
 
       {/* Main area */}
       <div style={s.main}>
-        {/* 3D Canvas */}
         <div style={s.canvas}>
           <CityScene
             layouts={layouts}
@@ -118,11 +171,11 @@ export default function App() {
           />
         </div>
 
-        {/* Right side panel — file viewer */}
         {selectedFile && (
           <div style={s.rightPanel}>
             <FilePanel
               filePath={selectedFile}
+              projectId={cityData.currentProjectId}
               onClose={() => setSelectedFile(null)}
               onNavigate={setSelectedFile}
               deps={cityData.deps}
@@ -323,6 +376,42 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 11,
     color: "#52525b",
     marginTop: 12,
+    textAlign: "center",
+  },
+  // Project list (splash mode)
+  projectList: {
+    width: "100%",
+    maxHeight: 400,
+    overflow: "auto",
+    display: "flex",
+    flexDirection: "column",
+    gap: 4,
+  },
+  projectItem: {
+    display: "flex",
+    flexDirection: "column",
+    width: "100%",
+    padding: "8px 12px",
+    background: "#09090b",
+    border: "1px solid #27272a",
+    borderRadius: 6,
+    cursor: "pointer",
+    textAlign: "left",
+    gap: 2,
+    transition: "background 0.15s, border-color 0.15s",
+  },
+  projectName: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#e4e4e7",
+  },
+  projectPath: {
+    fontSize: 10,
+    color: "#52525b",
+    fontFamily: "'SF Mono', monospace",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
 };
 

@@ -267,8 +267,9 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
 
 
     </group>
+    </Select>
 
-    {/* Rooftop signs — one on each edge of the roof */}
+    {/* Rooftop signs — outside Select so outline doesn't affect them */}
     {[
       // Front edge (positive Z)
       { pos: [layout.x, h + 0.25, layout.z + d / 2 + 0.01] as const, rotY: 0, signW: w },
@@ -301,7 +302,6 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
         </group>
       </group>
     ))}
-    </Select>
 
     {/* Effects — not scaled, positioned at building ground level */}
     <group ref={effectsRef} position={[layout.x, 0, layout.z]}>

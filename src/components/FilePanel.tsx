@@ -4,12 +4,13 @@ import type { FileContents } from "@pierre/diffs/react";
 
 interface FilePanelProps {
   filePath: string;
+  projectId?: string | null;
   onClose: () => void;
   onNavigate: (path: string) => void;
   deps: { from: string; to: string }[];
 }
 
-export function FilePanel({ filePath, onClose, onNavigate, deps }: FilePanelProps) {
+export function FilePanel({ filePath, projectId, onClose, onNavigate, deps }: FilePanelProps) {
   const [fileData, setFileData] = useState<FileContents | null>(null);
   const [prevData, setPrevData] = useState<FileContents | null>(null);
   const [loading, setLoading] = useState(true);
@@ -28,7 +29,8 @@ export function FilePanel({ filePath, onClose, onNavigate, deps }: FilePanelProp
     setShowDiff(false);
     setHasDiff(false);
 
-    fetch(`http://localhost:3001/api/file?path=${encodeURIComponent(filePath)}`)
+    const projectParam = projectId ? `&project=${encodeURIComponent(projectId)}` : "";
+    fetch(`http://localhost:3001/api/file?path=${encodeURIComponent(filePath)}${projectParam}`)
       .then((r) => r.json())
       .then((data) => {
         if (data.error) {

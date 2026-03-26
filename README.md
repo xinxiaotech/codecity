@@ -7,6 +7,7 @@ A real-time 3D city visualization of your codebase. Each file becomes a building
 - **3D City View** — Files are buildings, folders are green blocks, height = lines of code
 - **Live Updates** — Buildings grow/shrink as files are edited in real-time via file watcher
 - **Dependency Roads** — Import/require relationships rendered as PCB-style Manhattan-routed roads
+- **Multi-Project Support** — Auto-discovers Claude Code projects; switch between codebases without restarting the server
 - **Claude Code Integration** — Hooks show construction effects (crane, smoke, fence) on files being edited and survey effects (scanning beam, van, workers) on files being read
 - **File Viewer** — Click any building to view source code with syntax highlighting, powered by [@pierre/diffs](https://diffs.com) with Shiki. Shows diffs when files have been modified
 - **Interactive** — Hover buildings for file info tooltip, hover highlights connected roads, dimmed buildings when one is focused
@@ -19,9 +20,15 @@ A real-time 3D city visualization of your codebase. Each file becomes a building
 npm install
 ```
 
-### 2. Start the file watcher server
+### 2. Start the server
 
-Point it at any project directory you want to visualize:
+**Multi-project mode** (recommended) — auto-discovers all your Claude Code projects:
+
+```bash
+npx tsx server/index.ts
+```
+
+**Single-project mode** — watch a specific directory:
 
 ```bash
 npx tsx server/index.ts /path/to/your/project
@@ -33,7 +40,33 @@ npx tsx server/index.ts /path/to/your/project
 npm run dev
 ```
 
-Open http://localhost:5173 in your browser. The city will build as the server scans files.
+Open http://localhost:5173 in your browser.
+
+- In multi-project mode, you'll see a project picker with all discovered projects
+- In single-project mode, the city builds immediately as the server scans files
+- Switch between projects at any time using the dropdown in the toolbar
+
+## Multi-Project Support
+
+CodeCity auto-discovers projects from `~/.claude/projects/`, where Claude Code stores session data. Any directory you've used Claude Code in will appear in the project picker.
+
+### How it works
+
+1. The server reads `~/.claude/projects/` folder names (encoded paths like `-Users-foo-bar-myproject`)
+2. A backtracking decoder resolves each name back to the real filesystem path, handling ambiguity between path separators and literal hyphens
+3. Only projects whose directories still exist on disk are shown
+4. Projects are loaded on-demand when selected — file watchers start only when a client subscribes
+5. Idle projects (no connected clients for 60 seconds) are automatically cleaned up
+
+### WebSocket protocol
+
+The server uses a subscribe-based WebSocket protocol for multi-project support:
+
+- On connect, the server sends `{ type: "projects", projects: [...] }` with all discovered projects
+- Clients send `{ type: "subscribe", project: "<id>" }` to select a project
+- The server responds with `snapshot` and `deps` for that project
+- Clients can switch projects by sending another `subscribe` message
+- In single-project mode (CLI path given), clients are auto-subscribed on connect
 
 ## Claude Code Integration (Required for Live Effects)
 
@@ -65,19 +98,21 @@ This sends tool use events to the CodeCity server, which triggers:
 - **Edit/Write** — Construction crane on rooftop, smoke particles, yellow fence, orange glow
 - **Read** — Blue scanning beam, survey workers walking around, survey van parked nearby
 
-Effects auto-clear after a few seconds of inactivity.
+Effects auto-clear after a few seconds of inactivity. Hook events are automatically routed to the correct project based on file paths.
 
 ## Architecture
 
 ```
 codecity/
-  server/index.ts        # File watcher + WebSocket server + dependency parser
+  server/index.ts        # Multi-project server: file watcher, WebSocket, dependency parser, project discovery
   src/
-    App.tsx              # Main app with tooltip and file viewer
+    App.tsx              # Main app with project selector, tooltip, and file viewer
     components/
-      FileViewer.tsx     # Source/diff viewer using @pierre/diffs
+      FilePanel.tsx      # Source/diff viewer using @pierre/diffs
+      FileViewer.tsx     # Legacy file viewer
+      ProjectSelector.tsx # Project dropdown with search
     hooks/
-      useCityData.ts     # WebSocket client, tracks files/edits/surveys/deps
+      useCityData.ts     # WebSocket client, tracks files/edits/surveys/deps, project switching
       useTimeline.ts     # Snapshot timeline navigation
     scene/
       CityScene.tsx      # Three.js canvas with sky, lights, camera
@@ -99,11 +134,15 @@ codecity/
 
 ## Server API
 
-- `GET /api/snapshot` — Current file state (paths + line counts)
-- `GET /api/file?path=<relative-path>` — File content + previous version for diffs
-- `GET /api/recording` — Full event history for playback
-- `POST /api/hook` — Claude Code hook endpoint
-- `WebSocket ws://localhost:3001` — Real-time events (file changes, hooks, deps)
+- `GET /api/projects` — List all discovered Claude Code projects
+- `GET /api/snapshot?project=<id>` — Current file state (paths + line counts)
+- `GET /api/file?project=<id>&path=<relative-path>` — File content + previous version for diffs
+- `GET /api/recording?project=<id>` — Full event history for playback
+- `GET /api/timelapse?project=<id>` — Claude Code session timelapse events
+- `POST /api/hook` — Claude Code hook endpoint (auto-routes to correct project)
+- `WebSocket ws://localhost:3001` — Real-time events (file changes, hooks, deps, project list)
+
+> The `project` parameter is optional on all endpoints. When omitted, the CLI-specified project is used (single-project mode).
 
 ## Tech Stack
 
@@ -112,7 +151,7 @@ codecity/
 - [@pierre/diffs](https://diffs.com) — File viewer with syntax highlighting and diff rendering
 - [Vite](https://vite.dev) — Dev server and bundler
 - [Chokidar](https://github.com/paulmillr/chokidar) — File watcher
-- [Hono](https://hono.dev) — HTTP server (used for WebSocket via ws)
+- [ws](https://github.com/websockets/ws) — WebSocket server
 
 ## License
 
