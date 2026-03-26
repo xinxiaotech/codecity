@@ -41,15 +41,24 @@ function getParentFolder(path: string): string {
   return i > 0 ? path.substring(0, i) : ".";
 }
 
+function parseHex(color: string): [number, number, number] {
+  return [
+    parseInt(color.slice(1, 3), 16),
+    parseInt(color.slice(3, 5), 16),
+    parseInt(color.slice(5, 7), 16),
+  ];
+}
+
 interface GroundPatchesProps {
   layouts: LayoutRect[];
 }
 
-interface Rect {
-  x: number;
-  z: number;
-  hw: number;
-  hd: number;
+interface FolderInfo {
+  color: string;
+  rgb: [number, number, number];
+  rects: { x: number; z: number; hw: number; hd: number }[];
+  // pixel-space seed points (building centers)
+  seeds: { px: number; py: number }[];
 }
 
 function drawRoundedRect(
@@ -73,23 +82,91 @@ function drawRoundedRect(
   ctx.fill();
 }
 
+/** Build a binary mask for one folder: rounded rects → blur → threshold → hole fill */
+function buildFolderMask(
+  folder: FolderInfo,
+  canvasW: number, canvasH: number,
+  cornerPx: number,
+  boundsMinX: number, boundsMinZ: number,
+): Uint8Array {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#fff";
+
+  for (const r of folder.rects) {
+    const px = (r.x - boundsMinX) * PIXELS_PER_UNIT;
+    const py = (r.z - boundsMinZ) * PIXELS_PER_UNIT;
+    const pw = r.hw * 2 * PIXELS_PER_UNIT;
+    const ph = r.hd * 2 * PIXELS_PER_UNIT;
+    drawRoundedRect(ctx, px, py, pw, ph, cornerPx);
+  }
+
+  // Blur to merge nearby sibling files
+  ctx.filter = `blur(${MERGE_BLUR}px)`;
+  ctx.drawImage(canvas, 0, 0);
+  ctx.filter = "none";
+
+  const data = ctx.getImageData(0, 0, canvasW, canvasH).data;
+  const totalPx = canvasW * canvasH;
+
+  // Threshold
+  const solid = new Uint8Array(totalPx);
+  for (let i = 0; i < data.length; i += 4) {
+    if (data[i] > THRESHOLD) solid[i >> 2] = 1;
+  }
+
+  // Flood-fill exterior from edges
+  const exterior = new Uint8Array(totalPx);
+  const queue: number[] = [];
+  for (let x = 0; x < canvasW; x++) {
+    if (!solid[x]) { exterior[x] = 1; queue.push(x); }
+    const b = (canvasH - 1) * canvasW + x;
+    if (!solid[b]) { exterior[b] = 1; queue.push(b); }
+  }
+  for (let y = 1; y < canvasH - 1; y++) {
+    const l = y * canvasW;
+    const r = l + canvasW - 1;
+    if (!solid[l]) { exterior[l] = 1; queue.push(l); }
+    if (!solid[r]) { exterior[r] = 1; queue.push(r); }
+  }
+  while (queue.length > 0) {
+    const idx = queue.pop()!;
+    const x = idx % canvasW;
+    const y = (idx - x) / canvasW;
+    if (y > 0 && !solid[idx - canvasW] && !exterior[idx - canvasW]) { exterior[idx - canvasW] = 1; queue.push(idx - canvasW); }
+    if (y < canvasH - 1 && !solid[idx + canvasW] && !exterior[idx + canvasW]) { exterior[idx + canvasW] = 1; queue.push(idx + canvasW); }
+    if (x > 0 && !solid[idx - 1] && !exterior[idx - 1]) { exterior[idx - 1] = 1; queue.push(idx - 1); }
+    if (x < canvasW - 1 && !solid[idx + 1] && !exterior[idx + 1]) { exterior[idx + 1] = 1; queue.push(idx + 1); }
+  }
+
+  // Final mask: solid + filled interior holes
+  const mask = new Uint8Array(totalPx);
+  for (let i = 0; i < totalPx; i++) {
+    if (solid[i] || !exterior[i]) mask[i] = 1;
+  }
+  return mask;
+}
+
 export function GroundPatches({ layouts }: GroundPatchesProps) {
   const files = useMemo(() => layouts.filter((r) => !r.isFolder), [layouts]);
 
-  // Group files by parent folder
-  const folderGroups = useMemo(() => {
-    const groups = new Map<string, { color: string; rects: Rect[] }>();
+  const folders = useMemo(() => {
+    const groups = new Map<string, FolderInfo>();
     for (const f of files) {
       const folder = getParentFolder(f.path);
       if (!groups.has(folder)) {
-        groups.set(folder, { color: getFolderColor(folder), rects: [] });
+        const color = getFolderColor(folder);
+        groups.set(folder, { color, rgb: parseHex(color), rects: [], seeds: [] });
       }
-      groups.get(folder)!.rects.push({
-        x: f.x,
-        z: f.z,
+      const g = groups.get(folder)!;
+      g.rects.push({
+        x: f.x, z: f.z,
         hw: f.width / 2 + PAD_EXTRA,
         hd: f.depth / 2 + PAD_EXTRA,
       });
+      // Seeds will be computed in pixel space during texture build
     }
     return Array.from(groups.values());
   }, [files]);
@@ -114,122 +191,99 @@ export function GroundPatches({ layouts }: GroundPatchesProps) {
   const centerX = (bounds.minX + bounds.maxX) / 2;
   const centerZ = (bounds.minZ + bounds.maxZ) / 2;
 
-  const textures = useMemo(() => {
+  // Single composited texture — no overlap possible
+  const texture = useMemo(() => {
     const canvasW = Math.ceil(worldW * PIXELS_PER_UNIT);
     const canvasH = Math.ceil(worldD * PIXELS_PER_UNIT);
-    if (canvasW <= 0 || canvasH <= 0) return [];
+    if (canvasW <= 0 || canvasH <= 0) return null;
     const cornerPx = CORNER_RADIUS * PIXELS_PER_UNIT;
+    const totalPx = canvasW * canvasH;
 
-    return folderGroups.map(({ color, rects }) => {
-      const accCanvas = document.createElement("canvas");
-      accCanvas.width = canvasW;
-      accCanvas.height = canvasH;
-      const accCtx = accCanvas.getContext("2d")!;
-      accCtx.fillStyle = "#fff";
+    // 1. Build per-folder masks and seed points
+    const folderMasks: Uint8Array[] = [];
+    const folderSeeds: { px: number; py: number }[][] = [];
 
-      for (const r of rects) {
-        const px = (r.x - bounds.minX) * PIXELS_PER_UNIT;
-        const py = (r.z - bounds.minZ) * PIXELS_PER_UNIT;
-        const pw = r.hw * 2 * PIXELS_PER_UNIT;
-        const ph = r.hd * 2 * PIXELS_PER_UNIT;
-        drawRoundedRect(accCtx, px, py, pw, ph, cornerPx);
+    for (const f of folders) {
+      folderMasks.push(buildFolderMask(f, canvasW, canvasH, cornerPx, bounds.minX, bounds.minZ));
+      folderSeeds.push(f.rects.map(r => ({
+        px: (r.x - bounds.minX) * PIXELS_PER_UNIT,
+        py: (r.z - bounds.minZ) * PIXELS_PER_UNIT,
+      })));
+    }
+
+    // 2. Assign ownership: each pixel gets at most one folder
+    const owner = new Int16Array(totalPx).fill(-1);
+
+    for (let i = 0; i < totalPx; i++) {
+      // Collect which folders claim this pixel
+      let claimCount = 0;
+      let singleClaim = -1;
+      for (let fi = 0; fi < folders.length; fi++) {
+        if (folderMasks[fi][i]) {
+          claimCount++;
+          singleClaim = fi;
+        }
       }
 
-      // Blur to merge nearby sibling files, then threshold back to crisp
-      accCtx.filter = `blur(${MERGE_BLUR}px)`;
-      accCtx.drawImage(accCanvas, 0, 0);
-      accCtx.filter = "none";
-
-      const accData = accCtx.getImageData(0, 0, canvasW, canvasH);
-      const pixels = accData.data;
-
-      const cr = parseInt(color.slice(1, 3), 16);
-      const cg = parseInt(color.slice(3, 5), 16);
-      const cb = parseInt(color.slice(5, 7), 16);
-
-      const outCanvas = document.createElement("canvas");
-      outCanvas.width = canvasW;
-      outCanvas.height = canvasH;
-      const outCtx = outCanvas.getContext("2d")!;
-      const outData = outCtx.createImageData(canvasW, canvasH);
-      const out = outData.data;
-
-      // Build a solid mask from the threshold
-      const solid = new Uint8Array(canvasW * canvasH);
-      for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i] > THRESHOLD) solid[i >> 2] = 1;
+      if (claimCount === 0) continue;
+      if (claimCount === 1) {
+        owner[i] = singleClaim;
+        continue;
       }
 
-      // Flood-fill from edges to mark exterior pixels
-      const exterior = new Uint8Array(canvasW * canvasH);
-      const queue: number[] = [];
-      for (let x = 0; x < canvasW; x++) {
-        if (!solid[x]) { exterior[x] = 1; queue.push(x); }
-        const b = (canvasH - 1) * canvasW + x;
-        if (!solid[b]) { exterior[b] = 1; queue.push(b); }
-      }
-      for (let y = 1; y < canvasH - 1; y++) {
-        const l = y * canvasW;
-        const r = l + canvasW - 1;
-        if (!solid[l]) { exterior[l] = 1; queue.push(l); }
-        if (!solid[r]) { exterior[r] = 1; queue.push(r); }
-      }
-      while (queue.length > 0) {
-        const idx = queue.pop()!;
-        const x = idx % canvasW;
-        const y = (idx - x) / canvasW;
-        const neighbors = [
-          y > 0 ? idx - canvasW : -1,
-          y < canvasH - 1 ? idx + canvasW : -1,
-          x > 0 ? idx - 1 : -1,
-          x < canvasW - 1 ? idx + 1 : -1,
-        ];
-        for (const n of neighbors) {
-          if (n >= 0 && !solid[n] && !exterior[n]) {
-            exterior[n] = 1;
-            queue.push(n);
+      // Contested: nearest building center wins
+      const px = i % canvasW;
+      const py = (i - px) / canvasW;
+      let bestDist = Infinity;
+      let bestFolder = -1;
+      for (let fi = 0; fi < folders.length; fi++) {
+        if (!folderMasks[fi][i]) continue;
+        for (const s of folderSeeds[fi]) {
+          const dx = px - s.px;
+          const dy = py - s.py;
+          const dist = dx * dx + dy * dy;
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestFolder = fi;
           }
         }
       }
+      owner[i] = bestFolder;
+    }
 
-      // Fill: solid pixels + interior holes (non-exterior, non-solid)
-      for (let i = 0; i < solid.length; i++) {
-        if (solid[i] || !exterior[i]) {
-          const j = i << 2;
-          out[j] = cr;
-          out[j + 1] = cg;
-          out[j + 2] = cb;
-          out[j + 3] = 140;
-        }
-      }
+    // 3. Paint single output canvas
+    const outCanvas = document.createElement("canvas");
+    outCanvas.width = canvasW;
+    outCanvas.height = canvasH;
+    const outCtx = outCanvas.getContext("2d")!;
+    const outData = outCtx.createImageData(canvasW, canvasH);
+    const out = outData.data;
 
-      outCtx.putImageData(outData, 0, 0);
+    for (let i = 0; i < totalPx; i++) {
+      const fi = owner[i];
+      if (fi < 0) continue;
+      const [r, g, b] = folders[fi].rgb;
+      const j = i << 2;
+      out[j] = r;
+      out[j + 1] = g;
+      out[j + 2] = b;
+      out[j + 3] = 140;
+    }
 
-      const tex = new THREE.CanvasTexture(outCanvas);
-      tex.minFilter = THREE.NearestFilter;
-      tex.magFilter = THREE.NearestFilter;
-      return { texture: tex, color };
-    });
-  }, [folderGroups, bounds, worldW, worldD]);
+    outCtx.putImageData(outData, 0, 0);
 
-  if (files.length === 0) return null;
+    const tex = new THREE.CanvasTexture(outCanvas);
+    tex.minFilter = THREE.NearestFilter;
+    tex.magFilter = THREE.NearestFilter;
+    return tex;
+  }, [folders, bounds, worldW, worldD]);
+
+  if (!texture) return null;
 
   return (
-    <group>
-      {textures.map(({ texture }, i) => (
-        <mesh
-          key={i}
-          position={[centerX, 0.015, centerZ]}
-          rotation={[-Math.PI / 2, 0, 0]}
-        >
-          <planeGeometry args={[worldW, worldD]} />
-          <meshBasicMaterial
-            map={texture}
-            transparent
-            depthWrite={false}
-          />
-        </mesh>
-      ))}
-    </group>
+    <mesh position={[centerX, 0.015, centerZ]} rotation={[-Math.PI / 2, 0, 0]}>
+      <planeGeometry args={[worldW, worldD]} />
+      <meshBasicMaterial map={texture} transparent depthWrite={false} />
+    </mesh>
   );
 }
