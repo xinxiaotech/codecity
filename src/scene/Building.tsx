@@ -267,21 +267,28 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
 
     </group>
 
-    {/* Building name label — outside scaled group so text isn't stretched */}
-    <Text
-      position={[layout.x, h + 0.15, layout.z + d / 2 + 0.05]}
-      rotation={[-Math.PI / 6, 0, 0]}
-      fontSize={Math.min(0.3, w * 0.25)}
-      maxWidth={w * 1.5}
-      color="#ffffff"
-      anchorX="center"
-      anchorY="bottom"
-      outlineWidth={0.015}
-      outlineColor="#000000"
-      font={undefined}
-    >
-      {fileName}
-    </Text>
+    {/* Rooftop sign — sits on the front edge of the roof */}
+    <group position={[layout.x, h + 0.25, layout.z + d / 2 + 0.01]} rotation={[-0.35, 0, 0]}>
+      {/* Sign backing board — colored to match building */}
+      <mesh>
+        <boxGeometry args={[w * 0.95, 0.3, 0.04]} />
+        <meshStandardMaterial color={style.color} roughness={0.3} metalness={0.4} />
+      </mesh>
+      {/* Sign text */}
+      <Text
+        position={[0, 0, 0.025]}
+        fontSize={Math.min(0.22, w * 0.18)}
+        maxWidth={w * 0.88}
+        color="#ffffff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.01}
+        outlineColor="#000000"
+        font={undefined}
+      >
+        {fileName}
+      </Text>
+    </group>
 
     {/* Effects — not scaled, positioned at building ground level */}
     <group ref={effectsRef} position={[layout.x, 0, layout.z]}>
