@@ -107,6 +107,88 @@ const HIGHLIGHT_COLORS = {
   newFile: "#44dd66",
 };
 
+const GROUND_PATCH_MARGIN = 0.18;
+
+const CATEGORY_PATCH_COLORS = {
+  frontend: "#d98b5f",
+  backend: "#7a6f63",
+  utils: "#4f86c6",
+  tests: "#8e7cc3",
+  config: "#86a85d",
+  docs: "#b86f9c",
+  styles: "#d06f4b",
+  scripts: "#6f8f96",
+} as const;
+
+function getGroundPatchColor(path: string, extension: string): string {
+  const normalizedPath = path.toLowerCase();
+  const normalizedExtension = extension.toLowerCase();
+
+  if (
+    normalizedPath.includes("/__tests__/") ||
+    normalizedPath.includes("/test/") ||
+    normalizedPath.includes("/tests/") ||
+    normalizedPath.endsWith(".test.ts") ||
+    normalizedPath.endsWith(".test.tsx") ||
+    normalizedPath.endsWith(".test.js") ||
+    normalizedPath.endsWith(".test.jsx") ||
+    normalizedPath.endsWith(".spec.ts") ||
+    normalizedPath.endsWith(".spec.tsx") ||
+    normalizedPath.endsWith(".spec.js") ||
+    normalizedPath.endsWith(".spec.jsx")
+  ) {
+    return CATEGORY_PATCH_COLORS.tests;
+  }
+
+  if (["tsx", "jsx", "vue", "svelte"].includes(normalizedExtension)) {
+    return CATEGORY_PATCH_COLORS.frontend;
+  }
+
+  if (["css", "scss", "sass", "less", "styl"].includes(normalizedExtension)) {
+    return CATEGORY_PATCH_COLORS.styles;
+  }
+
+  if (["md", "txt", "rst", "adoc"].includes(normalizedExtension)) {
+    return CATEGORY_PATCH_COLORS.docs;
+  }
+
+  if (["json", "yaml", "yml", "toml", "ini", "conf"].includes(normalizedExtension)) {
+    return CATEGORY_PATCH_COLORS.config;
+  }
+
+  if (["sh", "bash", "zsh"].includes(normalizedExtension)) {
+    return CATEGORY_PATCH_COLORS.scripts;
+  }
+
+  if (
+    normalizedPath.includes("/utils/") ||
+    normalizedPath.includes("/util/") ||
+    normalizedPath.includes("/helpers/") ||
+    normalizedPath.includes("/helper/") ||
+    normalizedPath.includes("/common/") ||
+    normalizedPath.includes("/shared/")
+  ) {
+    return CATEGORY_PATCH_COLORS.utils;
+  }
+
+  if (
+    normalizedPath.includes("/server/") ||
+    normalizedPath.includes("/backend/") ||
+    normalizedPath.includes("/api/") ||
+    normalizedPath.includes("/routes/") ||
+    normalizedPath.includes("/controllers/") ||
+    normalizedPath.includes("/services/") ||
+    normalizedPath.includes("/middleware/") ||
+    normalizedPath.includes("/db/") ||
+    normalizedPath.includes("/database/") ||
+    normalizedPath.includes("/models/")
+  ) {
+    return CATEGORY_PATCH_COLORS.backend;
+  }
+
+  return CATEGORY_PATCH_COLORS.backend;
+}
+
 function BuildingHighlight({ width, depth, height, color }: {
   width: number; depth: number; height: number; color: string;
 }) {
@@ -167,6 +249,7 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
   const effectsRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
   const style = useMemo(() => getBuildingStyle(layout.path, layout.height), [layout.path, layout.height]);
+  const groundPatchColor = useMemo(() => getGroundPatchColor(layout.path, layout.extension || ""), [layout.path, layout.extension]);
 
   const floors = Math.max(2, Math.round(Math.max(1, Math.round(layout.height / 0.8)) / 2) * 2);
   const windowCols = Math.max(2, Math.round(Math.max(2, Math.floor(Math.max(layout.width, layout.depth) / 0.4)) / 2) * 2);
@@ -203,9 +286,20 @@ export const Building = React.memo(function Building({ layout, isNew, isEditing,
     : "";
   const w = layout.width;
   const d = layout.depth;
+  const groundPatchRadius = Math.sqrt(((w + GROUND_PATCH_MARGIN) / 2) ** 2 + ((d + GROUND_PATCH_MARGIN) / 2) ** 2);
 
   return (
     <>
+    <mesh position={[layout.x, 0.01, layout.z]} rotation={[-Math.PI / 2, 0, 0]}>
+      <circleGeometry args={[groundPatchRadius, 24]} />
+      <meshStandardMaterial
+        color={groundPatchColor}
+        roughness={0.95}
+        metalness={0.02}
+        transparent
+        opacity={dimmed ? 0.2 : 0.55}
+      />
+    </mesh>
     <group
       position={[layout.x, h / 2, layout.z]}
       scale={[1, yScale, 1]}
